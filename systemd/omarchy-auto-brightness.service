@@ -1,0 +1,16 @@
+[Unit]
+Description=Auto brightness from the ambient light sensors (screen + keyboard light)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/omarchy-auto-brightness run
+Restart=on-failure
+RestartSec=10
+Nice=10
+CPUQuota=5%
+MemoryMax=64M
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

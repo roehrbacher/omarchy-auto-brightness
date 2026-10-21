@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Auto brightness from the laptop's own ambient light sensors (iio "als").
+
+No camera, no learning: a fixed lux -> brightness curve with hysteresis,
+smooth ramps, a pause after manual changes, and keyboard light on in the dark.
+
+  omarchy-auto-brightness run          the daemon (systemd user service)
+  omarchy-auto-brightness status       JSON state (for the bar widget)
+  omarchy-auto-brightness on|off       enable / disable
+  omarchy-auto-brightness set KEY VAL  e.g. set min 10, set max 90, set kbd on
+  omarchy-auto-brightness lux          print current lux once
+"""
+import glob, json, math, os, subprocess, sys, time
+
+HOME = os.environ.get("HOME", "")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "omarchy", "auto-brightness.json")
+RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+STATE = os.path.join(RUN, "omarchy-auto-brightness.json")
+
+DEFAULTS = {
+    "enabled": True,
+    "min": 8,            # screen %, darkest room
+    "max": 100,          # screen %, sunlight
+    "keyboard": True,    # control the keyboard light
+    "kbdOnBelow": 8,     # lux: keyboard light on below this
+    "kbdOffAbove": 30,   # lux: and off again above this (hysteresis)
+    "kbdLevel": 1,
+    "pollSeconds": 1.5,
+    "manualPauseMinutes": 15,
+    # (lux, fraction of min..max); log-lux interpolation between points
+    "curve": [[0, 0.0], [5, 0.12], [30, 0.3], [150, 0.5], [600, 0.72], [2500, 0.9], [10000, 1.0]],
+}
+HYST_PCT = 4        # ignore curve moves smaller than this
+STEP_PCT = 2.0      # ramp step
+STEP_S = 0.04       # ramp step interval (~1 s for 50 %)
+MAX_LUX = 60000     # readings above this are treated as glitches
+
+
+def load_conf():
+    c = dict(DEFAULTS)
+    try:
+        with open(CONF) as f:
+            c.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    c["min"] = max(1, min(100, int(c["min"])))
+    c["max"] = max(c["min"], min(100, int(c["max"])))
+    return c
+
+
+def save_conf(c):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    keep = {k: c[k] for k in ("enabled", "min", "max", "keyboard") if k in c}
+    try:
+        with open(CONF) as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = {}
+    old.update(keep)
+    tmp = CONF + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(old, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, CONF)
+
+
+def read(path, default=None):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def sensors():
+    out = []
+    for d in sorted(glob.glob("/sys/bus/iio/devices/iio:device*")):
+        if read(d + "/name") != "als":
+            continue
+        if os.path.exists(d + "/in_illuminance_input"):
+            out.append((d + "/in_illuminance_input", 1.0))
+        elif os.path.exists(d + "/in_illuminance_raw"):
+            out.append((d + "/in_illuminance_raw", float(read(d + "/in_illuminance_scale", "1") or 1)))
+    return out
+
+
+def lux_now(sens):
+    vals = []
+    for path, scale in sens:
+        v = read(path)
+        try:
+            lux = float(v) * scale
+        except (TypeError, ValueError):
+            continue
+        if 0 <= lux <= MAX_LUX:
+            vals.append(lux)
+    # Two sensors: the brighter one wins (a hand or shadow on one sensor
+    # should not dim the screen).
+    return max(vals) if vals else None
+
+
+def curve_pct(lux, c):
+    pts = c["curve"]
+    x = math.log10(max(lux, 0) + 1)
+    frac = pts[-1][1]
+    for (l0, f0), (l1, f1) in zip(pts, pts[1:]):
+        x0, x1 = math.log10(l0 + 1), math.log10(l1 + 1)
+        if x <= x1:
+            t = 0 if x1 == x0 else max(0.0, min(1.0, (x - x0) / (x1 - x0)))
+            frac = f0 + (f1 - f0) * t
+            break
+    return c["min"] + (c["max"] - c["min"]) * frac
+
+
+def find_dev(cls, pattern):
+    hits = sorted(glob.glob(f"/sys/class/{cls}/{pattern}"))
+    return hits[0] if hits else None
+
+
+class Dev:
+    def __init__(self, path):
+        self.path, self.name = path, os.path.basename(path)
+        self.max = int(read(path + "/max_brightness", "1") or 1)
+
+    def get(self):
+        return int(read(self.path + "/brightness", "0") or 0)
+
+    def set(self, raw):
+        # brightnessctl goes through logind (SetBrightness) for a user session: no sudo.
+        subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))], check=False)
+
+
+def lid_closed():
+    for p in glob.glob("/proc/acpi/button/lid/*/state"):
+        if "closed" in (read(p) or ""):
+            return True
+    return False
+
+
+_lock_cache = [0.0, False]
+
+
+def locked():
+    now = time.monotonic()
+    if now - _lock_cache[0] > 10:
+        try:
+            r = subprocess.run(["qs", "ipc", "-p", "/usr/share/omarchy/shell", "call", "lock", "isLocked"],
+                               capture_output=True, text=True, timeout=4)
+            _lock_cache[1] = r.stdout.strip() == "true"
+        except Exception:
+            _lock_cache[1] = False
+        _lock_cache[0] = now
+    return _lock_cache[1]
+
+
+def write_state(d):
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f)
+    os.replace(tmp, STATE)
+
+
+def log(*a):
+    print(*a, flush=True)
+
+
+def run():
+    sens = sensors()
+    bl_path = find_dev("backlight", "*")
+    if not sens or not bl_path:
+        log("no ambient light sensor or backlight found; exiting")
+        return 1
+    bl = Dev(bl_path)
+    kp = find_dev("leds", "*kbd_backlight")
+    kbd = Dev(kp) if kp else None
+    log(f"sensors={[p for p, _ in sens]} backlight={bl.name} kbd={kbd.name if kbd else None}")
+
+    smooth = None          # EMA of log-lux
+    target = None          # current screen target %
+    last_set = None        # raw value we last wrote
+    kbd_last = None
+    paused_until = 0.0
+    conf_mtime = None
+    c = load_conf()
+    reason = ""
+    while True:
+        m = os.path.getmtime(CONF) if os.path.exists(CONF) else None
+        if m != conf_mtime:
+            c, conf_mtime = load_conf(), m
+            target = None  # re-evaluate with new limits
+        lux = lux_now(sens)
+        cur = bl.get()
+        now = time.monotonic()
+
+        # Manual change detection: brightness moved and it was not us.
+        if last_set is not None and abs(cur - last_set) > bl.max * 0.015:
+            paused_until = now + 60 * c["manualPauseMinutes"]
+            log(f"manual screen change {last_set}->{cur}; pausing {c['manualPauseMinutes']} min")
+            last_set = None
+        if kbd and kbd_last is not None and kbd.get() != kbd_last:
+            paused_until = now + 60 * c["manualPauseMinutes"]
+            log(f"manual keyboard change -> {kbd.get()}; pausing")
+            kbd_last = None
+
+        if not c["enabled"]:
+            reason = "off"
+        elif lid_closed():
+            reason = "lid closed"
+        elif locked():
+            reason = "locked"  # no swings while he is away
+        elif now < paused_until:
+            reason = "manual pause"
+        elif lux is None:
+            reason = "no reading"
+        else:
+            reason = "auto"
+
+        if lux is not None:
+            ll = math.log10(lux + 1)
+            # fast when it gets much brighter/darker, calm otherwise
+            a = 0.5 if smooth is None or abs(ll - smooth) > 0.6 else 0.25
+            smooth = ll if smooth is None else smooth + a * (ll - smooth)
+        slux = (10 ** smooth - 1) if smooth is not None else None
+
+        want = curve_pct(slux, c) if slux is not None else None
+        if reason == "auto":
+            if target is None or abs(want - target) >= HYST_PCT:
+                target = want
+            goal = round(target / 100 * bl.max)
+            cur_pct = cur / bl.max * 100
+            if abs(goal - cur) > bl.max * 0.005:
+                log(f"lux={slux:.1f} screen {cur_pct:.0f}% -> {target:.0f}%")
+                step = bl.max * STEP_PCT / 100
+                v = cur
+                while abs(goal - v) > step:
+                    v += step if goal > v else -step
+                    bl.set(v)
+                    time.sleep(STEP_S)
+                bl.set(goal)
+            last_set = bl.get()
+            if kbd and c["keyboard"]:
+                k = kbd.get()
+                nk = k
+                if slux < c["kbdOnBelow"]:
+                    nk = min(kbd.max, int(c["kbdLevel"]))
+                elif slux > c["kbdOffAbove"]:
+                    nk = 0
+                if nk != k:
+                    log(f"lux={slux:.1f} keyboard {k} -> {nk}")
+                    kbd.set(nk)
+                kbd_last = kbd.get()
+        else:
+            # not ours to track while paused/off/locked/lid closed
+            last_set, kbd_last = None, None
+
+        write_state({
+            "enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"],
+            "lux": None if slux is None else round(slux, 1), "rawLux": lux,
+            "screen": round(bl.get() / bl.max * 100), "target": None if want is None else round(want),
+            "mode": reason, "pausedFor": max(0, round(paused_until - now)),
+        })
+        time.sleep(c["pollSeconds"])
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    if cmd == "run":
+        return run() or 0
+    if cmd == "lux":
+        print(lux_now(sensors()))
+        return 0
+    c = load_conf()
+    if cmd in ("on", "off", "toggle"):
+        c["enabled"] = (cmd == "on") or (cmd == "toggle" and not c["enabled"])
+        save_conf(c)
+    elif cmd == "set" and len(argv) == 4:
+        k, v = argv[2], argv[3]
+        if k in ("min", "max"):
+            c[k] = int(float(v))
+        elif k in ("keyboard", "kbd"):
+            c["keyboard"] = v in ("on", "1", "true")
+        else:
+            print(__doc__, file=sys.stderr)
+            return 2
+        save_conf(c)
+        c = load_conf()
+    elif cmd != "status":
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        with open(STATE) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        st = {"mode": "not running"}
+    st.update({"enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"]})
+    print(json.dumps(st))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
