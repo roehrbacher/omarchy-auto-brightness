@@ -60,4 +60,23 @@ assert ctl.offset == 0, "offset cleared next day"
 ctl.manual(state["t"], s + 10, "d2"); ctl.reset(state["t"], "resume")
 assert ctl.offset == 0 and ctl.stable is None, "fresh reading after resume"
 for et, m in ctl.events: print(f"t={et:6.1f}s  {m}")
+print("--- keyboard: Apple-style levels with hysteresis")
+k = ab.Controller(dict(c)); seen = []
+def kb(lux, secs=3):
+    global t
+    for i in range(int(secs / dt)):
+        k.feed_lux(t, lux); w = k.kbd_level(2)
+        if w is not None and w != k.kbd_want:
+            k.kbd_want = w; seen.append((lux, w)); print(f"lux {lux:>5} -> keyboard {w}")
+        t += dt
+t = 1000.0
+kb(200); assert k.kbd_want == 0
+kb(15); assert k.kbd_want == 0, "8-30 lx dead zone keeps off"
+kb(6); assert k.kbd_want == 1, "dim -> 1"
+kb(2); assert k.kbd_want == 2, "very dark -> 2"
+kb(4); assert k.kbd_want == 2, "3-5 lx keeps 2 (hysteresis)"
+kb(7); assert k.kbd_want == 1, "above 5 lx -> 1"
+kb(4); assert k.kbd_want == 1, "4 lx from level 1 stays 1"
+before = len(seen); kb(6.5); assert len(seen) == before, "no write without a threshold crossing (his key press sticks)"
+kb(40); assert k.kbd_want == 0, "bright -> off"
 print("simulation ok")

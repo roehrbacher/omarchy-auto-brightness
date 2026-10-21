@@ -38,7 +38,8 @@ DEFAULTS = {
     "fullLux": 10000,      # lux that maps to max
     "keyboard": True,
     "kbdOnBelow": 8,       # lux: keyboard level 1 below this
-    "kbdLevel2Below": 0,   # lux: level 2 below this (0 = never; level 2 glares in the dark)
+    "kbdLevel2Below": 3,   # lux: level 2 below this (very dark; 0 = never)
+    "kbdLevel2Exit": 5,    # lux: and back to level 1 only above this (hysteresis)
     "kbdOffAbove": 30,     # lux: off above this
     "brightenSeconds": 1.5,
     "dimSeconds": 7.0,
@@ -215,7 +216,9 @@ class Controller:
         c, lux = self.c, self.stable
         if lux is None:
             return None
-        if c["kbdLevel2Below"] and lux < c["kbdLevel2Below"]:
+        l2 = c["kbdLevel2Below"]
+        l2_exit = max(l2, c.get("kbdLevel2Exit", l2))
+        if l2 and (lux < l2 or (self.kbd_want == 2 and lux <= l2_exit)):
             want = min(2, kbd_max)
         elif lux < c["kbdOnBelow"]:
             want = 1

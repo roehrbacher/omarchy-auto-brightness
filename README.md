@@ -14,10 +14,10 @@ Version 2 works like a MacBook (no habit learning):
   sensors (XPS 14) the brighter one wins, so a hand over one does nothing.
 - **Never dims during a fullscreen video** (fullscreen window + an MPRIS player Playing).
 - **Fresh reading** on resume and when the lid opens.
-- **Keyboard light:** native levels only. Level 1 below 8 lx, off above 30 lx;
-  only switched when the room crosses those lines, so your own key presses
-  stick. Level 2 is optional (`kbdLevel2Below`, off by default: in a dark room
-  it glares). The inactivity timeout is the Dell firmware's own
+- **Keyboard light (Apple-style, native levels only):** level 2 below 3 lx
+  (back to 1 only above 5 lx), level 1 below 8 lx, off above 30 lx; 8-30 lx
+  keeps whatever it is. Only switched when the room crosses those lines, so
+  your own key presses stick. `kbdLevel2Below: 0` disables level 2. The inactivity timeout is the Dell firmware's own
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.
 - Holds while the lid is closed, the screen is locked, or the walk-away lock has dimmed it.
@@ -38,7 +38,7 @@ on/off, min, max and the keyboard switch. Right-click: on/off.
 
 CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off`.
 Settings: `~/.config/omarchy/auto-brightness.json` (also `curve`, `kbdOnBelow`,
-`kbdOffAbove`, `kbdLevel2Below`, `gamma`, `floor`, `brightenSeconds`, `dimSeconds`, `luxDeadband`, `settleSeconds`, `offsetResetRatio`).
+`kbdOffAbove`, `kbdLevel2Below`, `kbdLevel2Exit`, `gamma`, `floor`, `brightenSeconds`, `dimSeconds`, `luxDeadband`, `settleSeconds`, `offsetResetRatio`).
 
 ## Credits
 
