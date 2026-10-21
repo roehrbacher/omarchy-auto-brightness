@@ -5,7 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
-- **Curve:** log-lux with gamma 0.8 and an 8 % floor, between your min and max.
+- **Curve:** log-lux with gamma 0.8 between your min (default 8 %, the slider is the real floor) and max.
 - **Your change is an offset, not a pause.** Brightness keys move the curve up
   or down by that amount. The offset is dropped when the room light moves more
   than 2.5x from where you set it, after resume / lid open, or the next day.
@@ -14,9 +14,10 @@ Version 2 works like a MacBook (no habit learning):
   sensors (XPS 14) the brighter one wins, so a hand over one does nothing.
 - **Never dims during a fullscreen video** (fullscreen window + an MPRIS player Playing).
 - **Fresh reading** on resume and when the lid opens.
-- **Keyboard light (Apple-style, native levels only):** level 2 below 3 lx
-  (back to 1 only above 5 lx), level 1 below 8 lx, off above 30 lx; 8-30 lx
-  keeps whatever it is. Only switched when the room crosses those lines, so
+- **Keyboard light (Apple-style, native levels only):** level 2 below 1 lx
+  (back to 1 only above 2 lx), level 1 below 4 lx, off above 12 lx; 4-12 lx
+  keeps whatever it is. Calibrated on the XPS 14 sensors (a lit room reads
+  ~16-35 lx, a covered sensor 0-3 lx). Only switched when the room crosses those lines, so
   your own key presses stick. `kbdLevel2Below: 0` disables level 2. The inactivity timeout is the Dell firmware's own
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.

@@ -31,16 +31,15 @@ HOLD_FLAG = os.path.join(RUN, "omarchy-walk-away.dimmed")  # walk-away lock owns
 
 DEFAULTS = {
     "enabled": True,
-    "min": 8,              # screen %, darkest room (never below "floor")
+    "min": 8,              # screen %, darkest room (your slider is the real floor)
     "max": 100,            # screen %, sunlight
-    "floor": 8,            # hard floor in %
     "gamma": 0.8,          # <1 lifts the dim end of the curve
     "fullLux": 10000,      # lux that maps to max
     "keyboard": True,
-    "kbdOnBelow": 8,       # lux: keyboard level 1 below this
-    "kbdLevel2Below": 3,   # lux: level 2 below this (very dark; 0 = never)
-    "kbdLevel2Exit": 5,    # lux: and back to level 1 only above this (hysteresis)
-    "kbdOffAbove": 30,     # lux: off above this
+    "kbdOnBelow": 4,       # lux: keyboard level 1 below this (XPS 14 sensors: lit room ~16-35 lx)
+    "kbdLevel2Below": 1,   # lux: level 2 below this (very dark; 0 = never)
+    "kbdLevel2Exit": 2,    # lux: and back to level 1 only above this (hysteresis)
+    "kbdOffAbove": 12,     # lux: off above this
     "brightenSeconds": 1.5,
     "dimSeconds": 7.0,
     "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
@@ -111,8 +110,8 @@ def lux_now(sens):
 
 
 def curve_pct(lux, c):
-    """log-lux curve with gamma between max(min, floor) and max."""
-    lo = max(c["min"], c["floor"])
+    """log-lux curve with gamma between min and max (min defaults to 8 %)."""
+    lo = c["min"]
     hi = max(lo, c["max"])
     x = math.log10(max(lux, 0) + 1) / math.log10(c["fullLux"] + 1)
     x = max(0.0, min(1.0, x)) ** c["gamma"]

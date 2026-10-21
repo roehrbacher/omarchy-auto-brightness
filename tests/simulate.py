@@ -71,12 +71,12 @@ def kb(lux, secs=3):
         t += dt
 t = 1000.0
 kb(200); assert k.kbd_want == 0
-kb(15); assert k.kbd_want == 0, "8-30 lx dead zone keeps off"
-kb(6); assert k.kbd_want == 1, "dim -> 1"
-kb(2); assert k.kbd_want == 2, "very dark -> 2"
-kb(4); assert k.kbd_want == 2, "3-5 lx keeps 2 (hysteresis)"
-kb(7); assert k.kbd_want == 1, "above 5 lx -> 1"
-kb(4); assert k.kbd_want == 1, "4 lx from level 1 stays 1"
-before = len(seen); kb(6.5); assert len(seen) == before, "no write without a threshold crossing (his key press sticks)"
-kb(40); assert k.kbd_want == 0, "bright -> off"
+kb(8); assert k.kbd_want == 0, "4-12 lx dead zone keeps off"
+kb(3); assert k.kbd_want == 1, "dim -> 1"
+kb(0); assert k.kbd_want == 2, "very dark -> 2"
+kb(1.5); assert k.kbd_want == 2, "1-2 lx keeps 2 (hysteresis)"
+kb(3); assert k.kbd_want == 1, "above 2 lx -> 1"
+kb(1.5); assert k.kbd_want == 1, "1.5 lx from level 1 stays 1"
+before = len(seen); kb(3.5); assert len(seen) == before, "no write without a threshold crossing (his key press sticks)"
+kb(0); kb(19); assert k.kbd_want == 0, "covered (2) then lit room 19 lx -> off (the 16:37 case)"
 print("simulation ok")
