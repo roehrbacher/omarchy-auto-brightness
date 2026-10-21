@@ -3,14 +3,30 @@
 Screen brightness and keyboard light follow the laptop's **built-in ambient
 light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo.
 
-- Fixed lux → brightness curve (log scale) between your **min** and **max**,
-  4 % hysteresis and a smooth ~2 %/40 ms ramp (about 1 s from dark to bright). Polls every 1.5 s (tiny CPU).
-- Two sensors (e.g. Dell XPS 14): the brighter reading wins, so a hand over one
-  does not dim the screen. Reads `in_illuminance_input`, or `raw × scale`.
-- Keyboard light (`*kbd_backlight`): on below 8 lx, off above 30 lx.
-- Change brightness or the keyboard light yourself → auto pauses 15 min.
-- Does nothing while the lid is closed or the screen is locked.
+Version 2 works like a MacBook (no habit learning):
+
+- **Curve:** log-lux with gamma 0.8 and an 8 % floor, between your min and max.
+- **Your change is an offset, not a pause.** Brightness keys move the curve up
+  or down by that amount. The offset is dropped when the room light moves more
+  than 2.5x from where you set it, after resume / lid open, or the next day.
+- **Fades:** brightens in ~1.5 s, dims over ~7 s (smoothstep). Light changes
+  under 12 % and spikes or shadows shorter than 2 s are ignored. With two
+  sensors (XPS 14) the brighter one wins, so a hand over one does nothing.
+- **Never dims during a fullscreen video** (fullscreen window + an MPRIS player Playing).
+- **Fresh reading** on resume and when the lid opens.
+- **Keyboard light:** native levels only. Level 1 below 8 lx, off above 30 lx;
+  only switched when the room crosses those lines, so your own key presses
+  stick. Level 2 is optional (`kbdLevel2Below`, off by default: in a dark room
+  it glares). The inactivity timeout is the Dell firmware's own
+  (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
+  back on at the next key press; changing it needs root.
+- Holds while the lid is closed, the screen is locked, or the walk-away lock has dimmed it.
 - Writes through `brightnessctl` (logind), so the user service needs no root.
+
+`omarchy-auto-brightness sensors` shows what the light sensors expose (on the
+XPS 14 the second one also reports colour temperature and chromaticity x/y).
+
+Tests: `python3 tests/test_curve.py && python3 tests/simulate.py` (timeline log).
 
 ## Install / uninstall
 
@@ -22,7 +38,7 @@ on/off, min, max and the keyboard switch. Right-click: on/off.
 
 CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off`.
 Settings: `~/.config/omarchy/auto-brightness.json` (also `curve`, `kbdOnBelow`,
-`kbdOffAbove`, `pollSeconds`, `manualPauseMinutes`).
+`kbdOffAbove`, `kbdLevel2Below`, `gamma`, `floor`, `brightenSeconds`, `dimSeconds`, `luxDeadband`, `settleSeconds`, `offsetResetRatio`).
 
 ## Credits
 

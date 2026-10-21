@@ -1,39 +1,52 @@
 #!/usr/bin/env python3
 """Auto brightness from the laptop's own ambient light sensors (iio "als").
 
-No camera, no learning: a fixed lux -> brightness curve with hysteresis,
-smooth ramps, a pause after manual changes, and keyboard light on in the dark.
+No camera, no habit learning. v2 works like a MacBook:
+  - log-lux curve with gamma and an 8 % floor
+  - your own change becomes a +/- offset on the curve (no pause timer); the
+    offset is dropped when the room light moves >2.5x from where you set it,
+    after resume / lid open, or on the next day
+  - brightens fast (~1.5 s), dims slowly (~7 s), smooth fades
+  - ignores light changes under 12 % and spikes/shadows shorter than 2 s;
+    the brighter of the two sensors wins
+  - never dims while a fullscreen video plays
+  - keyboard light: native levels only (off/1/2), on below 8 lx, off above
+    30 lx; the Dell firmware's own inactivity timeout turns it off and the next
+    key press turns it back on (we never fight that)
 
   omarchy-auto-brightness run          the daemon (systemd user service)
   omarchy-auto-brightness status       JSON state (for the bar widget)
   omarchy-auto-brightness on|off       enable / disable
-  omarchy-auto-brightness set KEY VAL  e.g. set min 10, set max 90, set kbd on
+  omarchy-auto-brightness set KEY VAL  min|max|keyboard
   omarchy-auto-brightness lux          print current lux once
+  omarchy-auto-brightness sensors      what the light sensors expose (colour?)
 """
-import glob, json, math, os, subprocess, sys, time
+import datetime, glob, json, math, os, subprocess, sys, time
 
 HOME = os.environ.get("HOME", "")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "omarchy", "auto-brightness.json")
 RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 STATE = os.path.join(RUN, "omarchy-auto-brightness.json")
+HOLD_FLAG = os.path.join(RUN, "omarchy-walk-away.dimmed")  # walk-away lock owns the screen
 
 DEFAULTS = {
     "enabled": True,
-    "min": 8,            # screen %, darkest room
-    "max": 100,          # screen %, sunlight
-    "keyboard": True,    # control the keyboard light
-    "kbdOnBelow": 8,     # lux: keyboard light on below this
-    "kbdOffAbove": 30,   # lux: and off again above this (hysteresis)
-    "kbdLevel": 1,
-    "pollSeconds": 1.5,
-    "manualPauseMinutes": 15,
-    # (lux, fraction of min..max); log-lux interpolation between points
-    "curve": [[0, 0.0], [5, 0.12], [30, 0.3], [150, 0.5], [600, 0.72], [2500, 0.9], [10000, 1.0]],
+    "min": 8,              # screen %, darkest room (never below "floor")
+    "max": 100,            # screen %, sunlight
+    "floor": 8,            # hard floor in %
+    "gamma": 0.8,          # <1 lifts the dim end of the curve
+    "fullLux": 10000,      # lux that maps to max
+    "keyboard": True,
+    "kbdOnBelow": 8,       # lux: keyboard level 1 below this
+    "kbdLevel2Below": 0,   # lux: level 2 below this (0 = never; level 2 glares in the dark)
+    "kbdOffAbove": 30,     # lux: off above this
+    "brightenSeconds": 1.5,
+    "dimSeconds": 7.0,
+    "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
+    "settleSeconds": 2.0,  # a change must last this long (spikes, shadows)
+    "offsetResetRatio": 2.5,
 }
-HYST_PCT = 4        # ignore curve moves smaller than this
-STEP_PCT = 2.0      # ramp step
-STEP_S = 0.04       # ramp step interval (~1 s for 50 %)
-MAX_LUX = 60000     # readings above this are treated as glitches
+MAX_LUX = 60000
 
 
 def load_conf():
@@ -87,29 +100,130 @@ def sensors():
 def lux_now(sens):
     vals = []
     for path, scale in sens:
-        v = read(path)
         try:
-            lux = float(v) * scale
+            lux = float(read(path)) * scale
         except (TypeError, ValueError):
             continue
         if 0 <= lux <= MAX_LUX:
             vals.append(lux)
-    # Two sensors: the brighter one wins (a hand or shadow on one sensor
-    # should not dim the screen).
-    return max(vals) if vals else None
+    return max(vals) if vals else None  # the brighter sensor wins
 
 
 def curve_pct(lux, c):
-    pts = c["curve"]
-    x = math.log10(max(lux, 0) + 1)
-    frac = pts[-1][1]
-    for (l0, f0), (l1, f1) in zip(pts, pts[1:]):
-        x0, x1 = math.log10(l0 + 1), math.log10(l1 + 1)
-        if x <= x1:
-            t = 0 if x1 == x0 else max(0.0, min(1.0, (x - x0) / (x1 - x0)))
-            frac = f0 + (f1 - f0) * t
-            break
-    return c["min"] + (c["max"] - c["min"]) * frac
+    """log-lux curve with gamma between max(min, floor) and max."""
+    lo = max(c["min"], c["floor"])
+    hi = max(lo, c["max"])
+    x = math.log10(max(lux, 0) + 1) / math.log10(c["fullLux"] + 1)
+    x = max(0.0, min(1.0, x)) ** c["gamma"]
+    return lo + (hi - lo) * x
+
+
+class Controller:
+    """Pure logic (no I/O) so it can be simulated. Times in seconds."""
+
+    def __init__(self, c):
+        self.c = c
+        self.stable = None        # filtered lux
+        self.window = []          # (t, lux) candidates differing from stable
+        self.offset = 0.0
+        self.anchor = None        # lux when the offset was set
+        self.offset_day = None
+        self.ramp = None          # (t0, start, goal, duration)
+        self.kbd_want = None
+        self.events = []
+
+    def ev(self, t, msg):
+        self.events.append((t, msg))
+
+    def reset(self, t, why):
+        if self.offset:
+            self.ev(t, f"offset {self.offset:+.0f}% cleared ({why})")
+        self.offset, self.anchor, self.stable, self.window = 0.0, None, None, []
+        self.kbd_want = None
+        self.ramp = None
+
+    def feed_lux(self, t, lux):
+        c = self.c
+        if lux is None:
+            return
+        if self.stable is None:
+            self.stable = lux
+            self.window = []
+            return
+        ratio = (lux + 1) / (self.stable + 1)
+        if abs(ratio - 1) < c["luxDeadband"]:
+            self.window = []
+            return
+        side = ratio > 1
+        if self.window and self.window[0][2] != side:
+            self.window = []
+        self.window.append((t, lux, side))
+        if t - self.window[0][0] >= c["settleSeconds"]:
+            vals = sorted(v for _, v, _ in self.window)
+            new = vals[len(vals) // 2]
+            self.ev(t, f"lux {self.stable:.1f} -> {new:.1f}")
+            self.stable = new
+            self.window = []
+            if self.anchor is not None and self.offset:
+                r = (new + 1) / (self.anchor + 1)
+                if r > c["offsetResetRatio"] or r < 1 / c["offsetResetRatio"]:
+                    self.ev(t, f"offset {self.offset:+.0f}% cleared (light moved {r:.2f}x)")
+                    self.offset, self.anchor = 0.0, None
+
+    def manual(self, t, cur_pct, today):
+        base = curve_pct(self.stable if self.stable is not None else 0, self.c)
+        self.offset = cur_pct - base
+        self.anchor = self.stable
+        self.offset_day = today
+        self.ramp = None
+        self.ev(t, f"manual change to {cur_pct:.0f}% -> offset {self.offset:+.0f}% at {self.anchor or 0:.1f} lx")
+
+    def new_day(self, t, today):
+        if self.offset and self.offset_day != today:
+            self.ev(t, f"offset {self.offset:+.0f}% cleared (new day)")
+            self.offset, self.anchor = 0.0, None
+
+    def target(self):
+        if self.stable is None:
+            return None
+        return max(1.0, min(100.0, curve_pct(self.stable, self.c) + self.offset))
+
+    def step(self, t, cur_pct, no_dim=False):
+        """Return the brightness % to write now, or None."""
+        want = self.target()
+        if want is None:
+            return None
+        if no_dim and want < cur_pct:
+            want = cur_pct
+        if self.ramp and abs(self.ramp[2] - want) > 0.5:
+            self.ramp = None
+        if self.ramp is None:
+            if abs(want - cur_pct) < 1.0:
+                return None
+            dur = self.c["brightenSeconds"] if want > cur_pct else self.c["dimSeconds"]
+            self.ramp = (t, cur_pct, want, dur)
+            self.ev(t, f"fade {cur_pct:.0f}% -> {want:.0f}% over {dur:g}s")
+        t0, a, b, dur = self.ramp
+        p = 1.0 if dur <= 0 else min(1.0, (t - t0) / dur)
+        p = p * p * (3 - 2 * p)  # smoothstep: soft start and end
+        if p >= 1.0:
+            self.ramp = None
+        return a + (b - a) * p
+
+    def kbd_level(self, kbd_max):
+        """Wanted keyboard level or None (= leave as is)."""
+        c, lux = self.c, self.stable
+        if lux is None:
+            return None
+        if c["kbdLevel2Below"] and lux < c["kbdLevel2Below"]:
+            want = min(2, kbd_max)
+        elif lux < c["kbdOnBelow"]:
+            want = 1
+        elif lux > c["kbdOffAbove"]:
+            want = 0
+        else:
+            want = self.kbd_want  # dead zone: keep
+        return want
 
 
 def find_dev(cls, pattern):
@@ -126,31 +240,61 @@ class Dev:
         return int(read(self.path + "/brightness", "0") or 0)
 
     def set(self, raw):
-        # brightnessctl goes through logind (SetBrightness) for a user session: no sudo.
+        # brightnessctl goes through logind (SetBrightness): no sudo.
         subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))], check=False)
 
 
 def lid_closed():
-    for p in glob.glob("/proc/acpi/button/lid/*/state"):
-        if "closed" in (read(p) or ""):
+    return any("closed" in (read(p) or "") for p in glob.glob("/proc/acpi/button/lid/*/state"))
+
+
+_cache = {}
+
+
+def cached(key, secs, fn):
+    now = time.monotonic()
+    hit = _cache.get(key)
+    if hit and now - hit[0] < secs:
+        return hit[1]
+    try:
+        v = fn()
+    except Exception:
+        v = False
+    _cache[key] = (now, v)
+    return v
+
+
+def locked():
+    def f():
+        r = subprocess.run(["qs", "ipc", "-p", "/usr/share/omarchy/shell", "call", "lock", "isLocked"],
+                           capture_output=True, text=True, timeout=4)
+        return r.stdout.strip() == "true"
+    return cached("lock", 10, f)
+
+
+def media_playing():
+    """Any MPRIS player Playing (browsers, mpv, spotify...)."""
+    out = subprocess.run(["busctl", "--user", "--json=short", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                          "org.freedesktop.DBus", "ListNames"], capture_output=True, text=True, timeout=3).stdout
+    names = [n for n in json.loads(out)["data"][0] if n.startswith("org.mpris.MediaPlayer2.")]
+    for n in names:
+        r = subprocess.run(["busctl", "--user", "get-property", n, "/org/mpris/MediaPlayer2",
+                            "org.mpris.MediaPlayer2.Player", "PlaybackStatus"], capture_output=True, text=True, timeout=3)
+        if '"Playing"' in r.stdout:
             return True
     return False
 
 
-_lock_cache = [0.0, False]
+def fullscreen():
+    r = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=3)
+    try:
+        return bool(json.loads(r.stdout or "{}").get("fullscreen"))
+    except ValueError:
+        return False
 
 
-def locked():
-    now = time.monotonic()
-    if now - _lock_cache[0] > 10:
-        try:
-            r = subprocess.run(["qs", "ipc", "-p", "/usr/share/omarchy/shell", "call", "lock", "isLocked"],
-                               capture_output=True, text=True, timeout=4)
-            _lock_cache[1] = r.stdout.strip() == "true"
-        except Exception:
-            _lock_cache[1] = False
-        _lock_cache[0] = now
-    return _lock_cache[1]
+def fullscreen_video():
+    return cached("fsv", 3, lambda: fullscreen() and media_playing())
 
 
 def write_state(d):
@@ -174,92 +318,102 @@ def run():
     kp = find_dev("leds", "*kbd_backlight")
     kbd = Dev(kp) if kp else None
     log(f"sensors={[p for p, _ in sens]} backlight={bl.name} kbd={kbd.name if kbd else None}")
-
-    smooth = None          # EMA of log-lux
-    target = None          # current screen target %
-    last_set = None        # raw value we last wrote
-    kbd_last = None
-    paused_until = 0.0
-    conf_mtime = None
     c = load_conf()
+    ctl = Controller(c)
+    conf_mtime = None
+    last_set = None          # raw we last wrote
+    was_closed = False
+    last_wall, last_mono = time.time(), time.monotonic()
     reason = ""
     while True:
         m = os.path.getmtime(CONF) if os.path.exists(CONF) else None
         if m != conf_mtime:
             c, conf_mtime = load_conf(), m
-            target = None  # re-evaluate with new limits
-        lux = lux_now(sens)
-        cur = bl.get()
-        now = time.monotonic()
-
-        # Manual change detection: brightness moved and it was not us.
-        if last_set is not None and abs(cur - last_set) > bl.max * 0.015:
-            paused_until = now + 60 * c["manualPauseMinutes"]
-            log(f"manual screen change {last_set}->{cur}; pausing {c['manualPauseMinutes']} min")
+            ctl.c = c
+        t = time.monotonic()
+        # resume detection: wall clock jumped further than the monotonic one
+        wall = time.time()
+        if (wall - last_wall) - (t - last_mono) > 20:
+            ctl.reset(t, "resume")
             last_set = None
-        if kbd and kbd_last is not None and kbd.get() != kbd_last:
-            paused_until = now + 60 * c["manualPauseMinutes"]
-            log(f"manual keyboard change -> {kbd.get()}; pausing")
-            kbd_last = None
+        last_wall, last_mono = wall, t
+        closed = lid_closed()
+        if was_closed and not closed:
+            ctl.reset(t, "lid opened")
+            last_set = None
+        was_closed = closed
+        ctl.new_day(t, datetime.date.today().isoformat())
+        ctl.feed_lux(t, lux_now(sens))
+        for et, msg in ctl.events:
+            log(msg)
+        ctl.events.clear()
 
         if not c["enabled"]:
             reason = "off"
-        elif lid_closed():
+        elif closed:
             reason = "lid closed"
+        elif os.path.exists(HOLD_FLAG):
+            reason = "walk-away dim"
         elif locked():
-            reason = "locked"  # no swings while he is away
-        elif now < paused_until:
-            reason = "manual pause"
-        elif lux is None:
+            reason = "locked"
+        elif ctl.stable is None:
             reason = "no reading"
         else:
             reason = "auto"
 
-        if lux is not None:
-            ll = math.log10(lux + 1)
-            # fast when it gets much brighter/darker, calm otherwise
-            a = 0.5 if smooth is None or abs(ll - smooth) > 0.6 else 0.25
-            smooth = ll if smooth is None else smooth + a * (ll - smooth)
-        slux = (10 ** smooth - 1) if smooth is not None else None
-
-        want = curve_pct(slux, c) if slux is not None else None
+        cur = bl.get()
+        busy = False
         if reason == "auto":
-            if target is None or abs(want - target) >= HYST_PCT:
-                target = want
-            goal = round(target / 100 * bl.max)
-            cur_pct = cur / bl.max * 100
-            if abs(goal - cur) > bl.max * 0.005:
-                log(f"lux={slux:.1f} screen {cur_pct:.0f}% -> {target:.0f}%")
-                step = bl.max * STEP_PCT / 100
-                v = cur
-                while abs(goal - v) > step:
-                    v += step if goal > v else -step
-                    bl.set(v)
-                    time.sleep(STEP_S)
-                bl.set(goal)
-            last_set = bl.get()
+            if last_set is not None and abs(cur - last_set) > bl.max * 0.015:
+                ctl.manual(t, cur / bl.max * 100, datetime.date.today().isoformat())
+            pct = ctl.step(t, cur / bl.max * 100, no_dim=fullscreen_video())
+            if pct is not None:
+                raw = max(1, round(pct / 100 * bl.max))
+                if raw != cur:
+                    bl.set(raw)
+                cur = raw
+            busy = ctl.ramp is not None
+            last_set = cur
             if kbd and c["keyboard"]:
-                k = kbd.get()
-                nk = k
-                if slux < c["kbdOnBelow"]:
-                    nk = min(kbd.max, int(c["kbdLevel"]))
-                elif slux > c["kbdOffAbove"]:
-                    nk = 0
-                if nk != k:
-                    log(f"lux={slux:.1f} keyboard {k} -> {nk}")
-                    kbd.set(nk)
-                kbd_last = kbd.get()
+                want = ctl.kbd_level(kbd.max)
+                # only act on transitions, so the firmware idle-off and the
+                # user's own key presses are never overridden
+                if want is not None and want != ctl.kbd_want:
+                    log(f"lux={ctl.stable:.1f} keyboard -> {want}")
+                    kbd.set(want)
+                    ctl.kbd_want = want
+            for et, msg in ctl.events:
+                log(msg)
+            ctl.events.clear()
         else:
-            # not ours to track while paused/off/locked/lid closed
-            last_set, kbd_last = None, None
+            last_set = None
+            ctl.ramp = None
 
         write_state({
             "enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"],
-            "lux": None if slux is None else round(slux, 1), "rawLux": lux,
-            "screen": round(bl.get() / bl.max * 100), "target": None if want is None else round(want),
-            "mode": reason, "pausedFor": max(0, round(paused_until - now)),
+            "lux": None if ctl.stable is None else round(ctl.stable, 1),
+            "screen": round(bl.get() / bl.max * 100),
+            "target": None if ctl.target() is None else round(ctl.target()),
+            "offset": round(ctl.offset), "mode": reason,
         })
-        time.sleep(c["pollSeconds"])
+        time.sleep(0.1 if busy else 0.5)
+
+
+def describe_sensors():
+    out = []
+    for d in sorted(glob.glob("/sys/bus/iio/devices/iio:device*")):
+        name = read(d + "/name")
+        if name != "als":
+            continue
+        ch = sorted({os.path.basename(p).split("_")[1] for p in glob.glob(d + "/in_*_raw") + glob.glob(d + "/in_*_input")})
+        info = {"device": os.path.basename(d), "channels": ch}
+        sc = lambda n: float(read(f"{d}/in_{n}_scale", "1") or 1)
+        if "colortemp" in ch:
+            info["colortempK"] = round(float(read(d + "/in_colortemp_raw", "0")) * sc("colortemp"))
+        if "chromaticity" in ch:
+            info["chromaticityXY"] = [round(float(read(f"{d}/in_chromaticity_{a}_raw", "0")) * sc("chromaticity"), 3) for a in "xy"]
+        out.append(info)
+    return out
 
 
 def main(argv):
@@ -268,6 +422,9 @@ def main(argv):
         return run() or 0
     if cmd == "lux":
         print(lux_now(sensors()))
+        return 0
+    if cmd == "sensors":
+        print(json.dumps(describe_sensors(), indent=1))
         return 0
     c = load_conf()
     if cmd in ("on", "off", "toggle"):

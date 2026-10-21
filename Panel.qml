@@ -27,8 +27,9 @@ Panel {
   function statusLine() {
     var m = st.mode || ""
     var lux = st.lux === null || st.lux === undefined ? "" : " · " + Math.round(st.lux) + " lx"
-    if (m === "auto") return "Following the light sensor" + lux + " · screen " + st.screen + "%"
-    if (m === "manual pause") return "Paused after your change (" + Math.ceil(st.pausedFor / 60) + " min left)" + lux
+    if (m === "auto" && !st.offset) return "Following the light sensor" + lux + " · screen " + st.screen + "%"
+    if (m === "auto" && st.offset) return "Following the light sensor" + lux + " · your offset " + (st.offset > 0 ? "+" : "") + st.offset + "%"
+    if (m === "walk-away dim") return "Held by the walk-away lock" + lux
     if (m === "off") return "Off" + lux
     if (m === "not running") return "Service not running"
     return "Waiting (" + m + ")" + lux
