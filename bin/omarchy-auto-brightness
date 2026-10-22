@@ -45,6 +45,7 @@ DEFAULTS = {
     "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
     "settleSeconds": 2.0,  # a change must last this long (spikes, shadows)
     "offsetResetRatio": 2.5,
+    "sensorMedianSeconds": 4.0,  # per-sensor median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
 }
 MAX_LUX = 60000
 
@@ -97,16 +98,49 @@ def sensors():
     return out
 
 
-def lux_now(sens):
-    vals = []
+def lux_once(sens):
+    """One raw sample per sensor (None = unreadable or impossible)."""
+    out = []
     for path, scale in sens:
         try:
             lux = float(read(path)) * scale
         except (TypeError, ValueError):
-            continue
-        if 0 <= lux <= MAX_LUX:
-            vals.append(lux)
+            lux = None
+        out.append(lux if lux is not None and 0 <= lux <= MAX_LUX else None)
+    return out
+
+
+def lux_now(sens):
+    vals = [v for v in lux_once(sens) if v is not None]
     return max(vals) if vals else None  # the brighter sensor wins
+
+
+class SensorFilter:
+    """Per-sensor rolling median over `secs`, then the brighter sensor wins.
+    The XPS 14 HID light sensors sometimes report a burst of 0.5-1.5 s of
+    garbage (tens of thousands of lux in a dark room), alternating between the
+    two sensors, so max() of raw samples saw a >2 s 'sunlight' spike. A median
+    per sensor needs a change to hold for over half the window."""
+
+    def __init__(self, n, secs):
+        self.secs, self.hist = secs, [[] for _ in range(n)]
+
+    def feed(self, t, samples):
+        best = None
+        for h, v in zip(self.hist, samples):
+            if v is not None:
+                h.append((t, v))
+            while h and t - h[0][0] > self.secs:
+                h.pop(0)
+            if h:
+                vals = sorted(x for _, x in h)
+                m = vals[(len(vals) - 1) // 2]  # lower median: ties never favour a spike
+                best = m if best is None else max(best, m)
+        return best
+
+    def clear(self):
+        for h in self.hist:
+            h.clear()
 
 
 def curve_pct(lux, c):
@@ -266,6 +300,15 @@ def cached(key, secs, fn):
     return v
 
 
+def screen_off():
+    """Every monitor DPMS-off (the lock screen's idle blank)."""
+    def f():
+        r = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=3)
+        mons = [m for m in json.loads(r.stdout or "[]") if not m.get("disabled")]
+        return bool(mons) and not any(m.get("dpmsStatus", True) for m in mons)
+    return cached("dpms", 2, f)
+
+
 def locked():
     def f():
         r = subprocess.run(["qs", "ipc", "-p", "/usr/share/omarchy/shell", "call", "lock", "isLocked"],
@@ -322,6 +365,8 @@ def run():
     log(f"sensors={[p for p, _ in sens]} backlight={bl.name} kbd={kbd.name if kbd else None}")
     c = load_conf()
     ctl = Controller(c)
+    filt = SensorFilter(len(sens), c["sensorMedianSeconds"])
+    held = False
     conf_mtime = None
     last_set = None          # raw we last wrote
     was_closed = False
@@ -337,15 +382,17 @@ def run():
         wall = time.time()
         if (wall - last_wall) - (t - last_mono) > 20:
             ctl.reset(t, "resume")
+            filt.clear()
             last_set = None
         last_wall, last_mono = wall, t
         closed = lid_closed()
         if was_closed and not closed:
             ctl.reset(t, "lid opened")
+            filt.clear()
             last_set = None
         was_closed = closed
         ctl.new_day(t, datetime.date.today().isoformat())
-        ctl.feed_lux(t, lux_now(sens))
+        ctl.feed_lux(t, filt.feed(t, lux_once(sens)))
         for et, msg in ctl.events:
             log(msg)
         ctl.events.clear()
@@ -356,8 +403,11 @@ def run():
             reason = "lid closed"
         elif os.path.exists(HOLD_FLAG):
             reason = "walk-away dim"
-        elif locked():
-            reason = "locked"
+        elif screen_off():
+            # The lock screen blanks via DPMS and saves/restores the keyboard
+            # light itself. While locked but lit we keep adjusting (the lock
+            # screen used to freeze at the old level, keyboard dark).
+            reason = "screen off"
         elif ctl.stable is None:
             reason = "no reading"
         else:
@@ -365,6 +415,11 @@ def run():
 
         cur = bl.get()
         busy = False
+        if reason == "auto" and held:
+            # coming back from a hold (screen off, walk-away, lid): re-apply the
+            # keyboard level, since others (lock blank/restore) changed it
+            ctl.kbd_want = None
+        held = reason != "auto"
         if reason == "auto":
             if last_set is not None and abs(cur - last_set) > bl.max * 0.015:
                 ctl.manual(t, cur / bl.max * 100, datetime.date.today().isoformat())

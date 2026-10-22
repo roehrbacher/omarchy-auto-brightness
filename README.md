@@ -5,6 +5,9 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.2.0: keeps adjusting on the lock screen (only pauses while the screen is DPMS-off) and re-applies the keyboard level after a pause; a 4 s per-sensor median drops the XPS 14 light sensors' bogus 1-2 s bursts (dark room suddenly reading ~40000 lx).
+
+
 - **Curve:** log-lux with gamma 0.8 between your min (default 8 %, the slider is the real floor) and max.
 - **Your change is an offset, not a pause.** Brightness keys move the curve up
   or down by that amount. The offset is dropped when the room light moves more

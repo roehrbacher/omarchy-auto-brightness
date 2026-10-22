@@ -80,3 +80,28 @@ kb(1.5); assert k.kbd_want == 1, "1.5 lx from level 1 stays 1"
 before = len(seen); kb(3.5); assert len(seen) == before, "no write without a threshold crossing (his key press sticks)"
 kb(0); kb(19); assert k.kbd_want == 0, "covered (2) then lit room 19 lx -> off (the 16:37 case)"
 print("simulation ok")
+
+# XPS HID sensor bursts (logged 22 Oct): dark room, two sensors alternately
+# report ~40000 lx for 0.5-1.5 s, overlapping to >2 s of max(). Must be ignored.
+f = ab.SensorFilter(2, c["sensorMedianSeconds"])
+ctl2 = ab.Controller(c); scr = 1.0; peak = 0
+def burst(t):
+    a = 41008.0 if 10.0 <= t < 11.5 else 0.0
+    b = 41008.0 if 11.0 <= t < 12.5 else 0.0
+    return [a, b]
+for i in range(300):
+    t = i * 0.1
+    ctl2.feed_lux(t, f.feed(t, burst(t)))
+    v = ctl2.step(t, scr)
+    if v is not None: scr = v
+    peak = max(peak, scr)
+print(f"--- HID burst: peak screen {peak:.0f}% stable={ctl2.stable}")
+assert peak < 5 and ctl2.stable == 0.0, "sensor burst must not brighten"
+# but a real lamp switched on is followed within ~4.5 s
+f = ab.SensorFilter(2, c["sensorMedianSeconds"]); ctl3 = ab.Controller(c)
+for i in range(100):
+    t = i * 0.1
+    ctl3.feed_lux(t, f.feed(t, [0.0 if t < 2 else 300.0, 0.0 if t < 2 else 250.0]))
+    if ctl3.stable == 300.0: print(f"--- lamp on at 2 s followed at {t:.1f} s"); break
+assert ctl3.stable == 300.0 and t < 7
+print("sensor filter OK")
