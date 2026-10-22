@@ -48,6 +48,11 @@ DEFAULTS = {
     "settleSeconds": 2.0,  # a change must last this long (spikes, shadows)
     "offsetResetRatio": 2.5,
     "sensorMedianSeconds": 4.0,  # per-sensor median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
+    "jumpSeconds": 10.0,   # an implausible jump (dark -> sunlight) must hold this long, every sample high
+    "jumpDarkLux": 50.0,   # "dark" stable value for the jump rule
+    "jumpFactor": 5.0,     # implausible: from < jumpDarkLux to > jumpFactor*stable + jumpAbsLux
+    "jumpAbsLux": 500.0,
+    "jumpHugeLux": 20000.0,  # ...or above this from a dark stable value
 }
 MAX_LUX = 60000
 
@@ -194,9 +199,27 @@ class Controller:
         side = ratio > 1
         if self.window and self.window[0][2] != side:
             self.window = []
-        self.window.append((t, lux, side))
-        if t - self.window[0][0] >= c["settleSeconds"]:
-            vals = sorted(v for _, v, _ in self.window)
+        jump = self.implausible(lux)
+        self.window.append((t, lux, side, jump))
+        if jump:
+            # bogus HID bursts (0 -> 41008 lx for ~6 s in a dark room): accept
+            # only if every sample of the last jumpSeconds is just as high
+            run = []
+            for w in reversed(self.window):
+                if not w[3]:
+                    break
+                run.append(w)
+            run.reverse()
+            if t - run[0][0] < c.get("jumpSeconds", 10.0):
+                return
+            vals = sorted(w[1] for w in run)
+            self.ev(t, f"sustained jump accepted after {t - run[0][0]:.0f}s")
+        else:
+            win = [w for w in self.window if not w[3]]
+            if t - win[0][0] < c["settleSeconds"]:
+                return
+            vals = sorted(w[1] for w in win)
+        if True:
             new = vals[len(vals) // 2]
             self.ev(t, f"lux {self.stable:.1f} -> {new:.1f}")
             self.stable = new
@@ -206,6 +229,12 @@ class Controller:
                 if r > c["offsetResetRatio"] or r < 1 / c["offsetResetRatio"]:
                     self.ev(t, f"offset {self.offset:+.0f}% cleared (light moved {r:.2f}x)")
                     self.offset, self.anchor = 0.0, None
+
+    def implausible(self, lux):
+        c, st = self.c, self.stable
+        if st is None or st >= c.get("jumpDarkLux", 50.0):
+            return False
+        return lux > c.get("jumpFactor", 5.0) * st + c.get("jumpAbsLux", 500.0) or lux > c.get("jumpHugeLux", 20000.0)
 
     def manual(self, t, cur_pct, today):
         base = curve_pct(self.stable if self.stable is not None else 0, self.c)
