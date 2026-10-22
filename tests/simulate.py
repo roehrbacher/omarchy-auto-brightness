@@ -105,3 +105,17 @@ for i in range(100):
     if ctl3.stable == 300.0: print(f"--- lamp on at 2 s followed at {t:.1f} s"); break
 assert ctl3.stable == 300.0 and t < 7
 print("sensor filter OK")
+
+# Dark-end wobble (XPS log 22 Oct 23:13): sensor flips 0 <-> 1 lx every few s.
+assert abs(ab.curve_pct(1, c) - ab.curve_pct(0, c)) < 1, "no step between 0 and 1 lx"
+f = ab.SensorFilter(2, c["sensorMedianSeconds"]); ctl4 = ab.Controller(c); scr = 1.0; lo = hi = None
+for i in range(1200):
+    t = i * 0.1
+    w = 1.0 if int(t / 3) % 2 else 0.0
+    ctl4.feed_lux(t, f.feed(t, [w, w]))
+    v = ctl4.step(t, scr)
+    if v is not None: scr = v
+    if t > 5: lo = scr if lo is None else min(lo, scr); hi = scr if hi is None else max(hi, scr)
+print(f"--- 0/1 lx wobble 120 s: screen {lo:.1f}..{hi:.1f}%")
+assert hi - lo < 0.5, "screen must stay steady"
+print("dark wobble OK")

@@ -5,6 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.2.1: dark-end hysteresis: lux changes under 2 lx are ignored and the curve treats 0-2 lx as dark, so the sensor's 0 <-> 1 lx wobble no longer fades the screen 1% <-> 13%.
 - 2.2.0: keeps adjusting on the lock screen (only pauses while the screen is DPMS-off) and re-applies the keyboard level after a pause; a 4 s per-sensor median drops the XPS 14 light sensors' bogus 1-2 s bursts (dark room suddenly reading ~40000 lx).
 
 

@@ -43,6 +43,8 @@ DEFAULTS = {
     "brightenSeconds": 1.5,
     "dimSeconds": 7.0,
     "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
+    "luxAbsDeadband": 2.0, # ...and smaller than 2 lx (dark end: sensor wobbles 0 <-> 1 lx)
+    "darkLux": 2.0,        # the curve treats 0..2 lx as fully dark (no 12-point step at 1 lx)
     "settleSeconds": 2.0,  # a change must last this long (spikes, shadows)
     "offsetResetRatio": 2.5,
     "sensorMedianSeconds": 4.0,  # per-sensor median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
@@ -147,7 +149,8 @@ def curve_pct(lux, c):
     """log-lux curve with gamma between min and max (min defaults to 8 %)."""
     lo = c["min"]
     hi = max(lo, c["max"])
-    x = math.log10(max(lux, 0) + 1) / math.log10(c["fullLux"] + 1)
+    lux = max(0.0, lux - c.get("darkLux", 0))
+    x = math.log10(lux + 1) / math.log10(c["fullLux"] + 1)
     x = max(0.0, min(1.0, x)) ** c["gamma"]
     return lo + (hi - lo) * x
 
@@ -185,7 +188,7 @@ class Controller:
             self.window = []
             return
         ratio = (lux + 1) / (self.stable + 1)
-        if abs(ratio - 1) < c["luxDeadband"]:
+        if abs(ratio - 1) < c["luxDeadband"] or abs(lux - self.stable) < c.get("luxAbsDeadband", 0):
             self.window = []
             return
         side = ratio > 1
