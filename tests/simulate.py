@@ -38,7 +38,7 @@ up_at = None
 before = state["screen"]; run(1.6, 5000)
 assert abs(state["screen"] - ab.curve_pct(5000, c)) < 1, "brightened within ~2 s settle + 1.5 s fade"
 # dim slowly
-run(2.0, 20, label="dark room 20 lx")
+run(12.5, 20, label="dark room 20 lx (big drop: waits dimHoldSeconds)")
 mid = run(3.5, 20)
 assert mid > ab.curve_pct(20, c) + 3, "still fading after 3.5 s (slow dim)"
 s = run(4, 20)
@@ -72,8 +72,8 @@ def kb(lux, secs=3):
 t = 1000.0
 kb(200); assert k.kbd_want == 0
 kb(8); assert k.kbd_want == 0, "4-12 lx dead zone keeps off"
-kb(3); assert k.kbd_want == 1, "dim -> 1"
-kb(0); assert k.kbd_want == 2, "very dark -> 2"
+kb(3, 13); assert k.kbd_want == 1, "dim -> 1 (big drop: after dimHoldSeconds)"
+kb(0, 13); assert k.kbd_want == 2, "very dark -> 2"
 kb(1.5); assert k.kbd_want == 2, "1-2 lx keeps 2 (hysteresis)"
 kb(3); assert k.kbd_want == 1, "above 2 lx -> 1"
 kb(1.5); assert k.kbd_want == 1, "1.5 lx from level 1 stays 1"

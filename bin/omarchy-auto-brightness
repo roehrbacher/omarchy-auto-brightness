@@ -40,8 +40,10 @@ DEFAULTS = {
     "kbdLevel2Below": 1,   # lux: level 2 below this (very dark; 0 = never)
     "kbdLevel2Exit": 2,    # lux: and back to level 1 only above this (hysteresis)
     "kbdOffAbove": 12,     # lux: off above this
-    "kbdOnSeconds": 15.0,  # darker keyboard level only after the darkness held this long
-                           # (train: tunnels/shadows/sensor dropouts of 2-7 s); brighter/off is immediate
+    "kbdOnSeconds": 3.0,   # darker keyboard level only after the darkness held this long; big drops
+                           # already wait dimHoldSeconds, so a 250 -> 0 lx tunnel lights it after ~15 s
+    "dimHoldSeconds": 12.0,  # a drop to under half the light must hold this long before the screen dims
+    "dimBigRatio": 0.5,      # (train dips of 2-7 s; Android debounces darkening 8 s, iPhones ~10-20 s)
     "brightenSeconds": 1.5,
     "dimSeconds": 7.0,
     "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
@@ -220,6 +222,22 @@ class Controller:
             self.ev(t, f"sustained jump accepted after {t - run[0][0]:.0f}s")
         else:
             win = [w for w in self.window if not w[3]]
+            # big drops (train tunnels/shadows: 250 -> 0 lx for 2-7 s) dim the
+            # screen only once every sample held them for dimHoldSeconds;
+            # brightening and small dims stay quick
+            ratio = c.get("dimBigRatio", 0.5)
+            big = lambda w: not w[2] and (w[1] + 1) / (self.stable + 1) < ratio
+            if c.get("dimHoldSeconds", 0) and big(win[-1]):
+                run = []
+                for w in reversed(win):
+                    if not big(w):
+                        break
+                    run.append(w)
+                if t - run[-1][0] < c["dimHoldSeconds"]:
+                    return
+                win = run[::-1]
+            elif c.get("dimHoldSeconds", 0):
+                win = [w for w in win if not big(w)]
             if t - win[0][0] < c["settleSeconds"]:
                 return
             vals = sorted(w[1] for w in win)

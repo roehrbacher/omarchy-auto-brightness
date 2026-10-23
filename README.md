@@ -5,6 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.4.0: the screen gets the same wait: a drop to under half the light (`dimBigRatio`) must hold for 12 s (`dimHoldSeconds`, every sample) before the screen dims, so 2-7 s train dips (250 -> 0 lx) no longer fade it 67% -> 1%. Smaller dims and all brightening stay quick. The keyboard wait (`kbdOnSeconds`) is now 3 s on top of that, so a real dark tunnel or room still lights the keys after ~15-17 s.
 - 2.3.0: keyboard light like a MacBook: it only turns on (or goes to level 2) after the darkness has lasted 15 s (`kbdOnSeconds`), and turns off as soon as it is bright again. Short 0 lx dips on a train (shadows, tunnels, sensor dropouts of 2-7 s in a 200-400 lx cabin) no longer switch it on.
 - 2.2.2: implausible jumps (from under 50 lx to over 5x+500 lx, or over 20000 lx) must hold for 10 s with every sample high, so the XPS sensors' bogus 6 s bursts (0 -> 41008 lx in a dark room) no longer flash the screen to 100%. Normal brightening stays fast.
 - 2.2.1: dark-end hysteresis: lux changes under 2 lx are ignored and the curve treats 0-2 lx as dark, so the sensor's 0 <-> 1 lx wobble no longer fades the screen 1% <-> 13%.
