@@ -10,8 +10,8 @@ No camera, no habit learning. v2 works like a MacBook:
   - ignores light changes under 12 % and spikes/shadows shorter than 2 s;
     the brighter of the two sensors wins
   - never dims while a fullscreen video plays
-  - keyboard light: native levels only (off/1/2), on below 8 lx, off above
-    30 lx; the Dell firmware's own inactivity timeout turns it off and the next
+  - keyboard light: native levels only (off/1/2), on below 4 lx only after
+    15 s of darkness, off above 12 lx at once; the Dell firmware's own inactivity timeout turns it off and the next
     key press turns it back on (we never fight that)
 
   omarchy-auto-brightness run          the daemon (systemd user service)
@@ -40,6 +40,8 @@ DEFAULTS = {
     "kbdLevel2Below": 1,   # lux: level 2 below this (very dark; 0 = never)
     "kbdLevel2Exit": 2,    # lux: and back to level 1 only above this (hysteresis)
     "kbdOffAbove": 12,     # lux: off above this
+    "kbdOnSeconds": 15.0,  # darker keyboard level only after the darkness held this long
+                           # (train: tunnels/shadows/sensor dropouts of 2-7 s); brighter/off is immediate
     "brightenSeconds": 1.5,
     "dimSeconds": 7.0,
     "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
@@ -172,6 +174,7 @@ class Controller:
         self.offset_day = None
         self.ramp = None          # (t0, start, goal, duration)
         self.kbd_want = None
+        self.kbd_dark = None      # (since, level) while waiting to turn the light on
         self.events = []
 
     def ev(self, t, msg):
@@ -182,6 +185,7 @@ class Controller:
             self.ev(t, f"offset {self.offset:+.0f}% cleared ({why})")
         self.offset, self.anchor, self.stable, self.window = 0.0, None, None, []
         self.kbd_want = None
+        self.kbd_dark = None
         self.ramp = None
 
     def feed_lux(self, t, lux):
@@ -276,8 +280,10 @@ class Controller:
             self.ramp = None
         return a + (b - a) * p
 
-    def kbd_level(self, kbd_max):
-        """Wanted keyboard level or None (= leave as is)."""
+    def kbd_level(self, kbd_max, t=None):
+        """Wanted keyboard level or None (= leave as is). Like a MacBook:
+        light goes on (or up) only after the darkness lasted kbdOnSeconds,
+        goes off (or down) as soon as it is bright again."""
         c, lux = self.c, self.stable
         if lux is None:
             return None
@@ -291,6 +297,17 @@ class Controller:
             want = 0
         else:
             want = self.kbd_want  # dead zone: keep
+        cur = self.kbd_want if self.kbd_want is not None else 0
+        hold = c.get("kbdOnSeconds", 0)
+        if t is None or not hold or want is None or want <= cur:
+            self.kbd_dark = None
+            return want
+        # darker: (re)start the timer when the wanted level changes
+        if self.kbd_dark is None or self.kbd_dark[1] != want:
+            self.kbd_dark = (t, want)
+        if t - self.kbd_dark[0] < hold:
+            return self.kbd_want  # None (unknown) or current: no write yet
+        self.kbd_dark = None
         return want
 
 
@@ -464,7 +481,7 @@ def run():
             busy = ctl.ramp is not None
             last_set = cur
             if kbd and c["keyboard"]:
-                want = ctl.kbd_level(kbd.max)
+                want = ctl.kbd_level(kbd.max, t)
                 # only act on transitions, so the firmware idle-off and the
                 # user's own key presses are never overridden
                 if want is not None and want != ctl.kbd_want:

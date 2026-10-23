@@ -5,6 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.3.0: keyboard light like a MacBook: it only turns on (or goes to level 2) after the darkness has lasted 15 s (`kbdOnSeconds`), and turns off as soon as it is bright again. Short 0 lx dips on a train (shadows, tunnels, sensor dropouts of 2-7 s in a 200-400 lx cabin) no longer switch it on.
 - 2.2.2: implausible jumps (from under 50 lx to over 5x+500 lx, or over 20000 lx) must hold for 10 s with every sample high, so the XPS sensors' bogus 6 s bursts (0 -> 41008 lx in a dark room) no longer flash the screen to 100%. Normal brightening stays fast.
 - 2.2.1: dark-end hysteresis: lux changes under 2 lx are ignored and the curve treats 0-2 lx as dark, so the sensor's 0 <-> 1 lx wobble no longer fades the screen 1% <-> 13%.
 - 2.2.0: keeps adjusting on the lock screen (only pauses while the screen is DPMS-off) and re-applies the keyboard level after a pause; a 4 s per-sensor median drops the XPS 14 light sensors' bogus 1-2 s bursts (dark room suddenly reading ~40000 lx).
@@ -20,7 +21,7 @@ Version 2 works like a MacBook (no habit learning):
 - **Never dims during a fullscreen video** (fullscreen window + an MPRIS player Playing).
 - **Fresh reading** on resume and when the lid opens.
 - **Keyboard light (Apple-style, native levels only):** level 2 below 1 lx
-  (back to 1 only above 2 lx), level 1 below 4 lx, off above 12 lx; 4-12 lx
+  (back to 1 only above 2 lx), level 1 below 4 lx, off above 12 lx; on/up only after 15 s of darkness, off at once; 4-12 lx
   keeps whatever it is. Calibrated on the XPS 14 sensors (a lit room reads
   ~16-35 lx, a covered sensor 0-3 lx). Only switched when the room crosses those lines, so
   your own key presses stick. `kbdLevel2Below: 0` disables level 2. The inactivity timeout is the Dell firmware's own
