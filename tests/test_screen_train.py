@@ -34,16 +34,27 @@ def replay(t):
         v = lux
     return v
 
-lo, first, _ = sim(replay, SEQ[-1][0] + 30)
-base = ab.curve_pct(200, dict(ab.DEFAULTS, min=1, max=100))
-assert lo >= base - 1, (lo, base)
-print("train replay: screen never below %.0f%% (curve at 200 lx = %.0f%%)" % (lo, base))
-for d in (2, 4, 6, 7, 10):
-    lo, first, _ = sim(lambda t: 0.0 if 30 <= t < 30 + d else 250.0, 90)
-    assert first is None, (d, first)
-print("0 lx dips of 2-10 s: screen does not dim")
+# 2.5.0: big drops dim part-way after dimQuickSeconds (half the drop in
+# log-lux), fully only after dimHoldSeconds; brightening back is quick.
+C = dict(ab.DEFAULTS, min=1, max=100)
+def partial_floor(lux):
+    return ab.curve_pct(((lux + 1) * 1) ** 0.5 - 1, C)
+
+lo, first, end = sim(replay, SEQ[-1][0] + 30)
+floor = partial_floor(200)
+assert lo >= floor - 1, (lo, floor)
+base = ab.curve_pct(200, C)
+assert end >= base - 1, (end, base)
+print("train replay: screen at least %.0f%% in a dip (part-way floor %.0f%%), back to %.0f%% (curve at 200 lx = %.0f%%)" % (lo, floor, end, base))
+lo, first, _ = sim(lambda t: 0.0 if 30 <= t < 32 else 250.0, 90)
+assert first is None, first
+print("0 lx dip of 2 s: screen does not dim")
+for d in (4, 6, 7):
+    lo, first, end = sim(lambda t: 0.0 if 30 <= t < 30 + d else 250.0, 90)
+    assert lo >= partial_floor(250) - 1 and end >= ab.curve_pct(250, C) - 1, (d, lo, end)
+print("0 lx dips of 4-7 s: only part-way (>= %.0f%%), then back" % partial_floor(250))
 lo, first, cur = sim(lambda t: 0.0 if t >= 30 else 250.0, 90)
-assert first is not None and 30 + 12 <= first <= 30 + 18 and cur <= 2, (first, cur)
+assert first is not None and first - 30 <= 6 and cur <= 2, (first, cur)
 print("lasting darkness: dimming starts after %.1f s, ends at %.0f%%" % (first - 30, cur))
 lo, first, cur = sim(lambda t: 150.0 if t >= 30 else 250.0, 60)
 assert first is not None and first - 30 <= 5, first

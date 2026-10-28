@@ -36,14 +36,15 @@ assert not ons, ons
 print("train replay (%d lux changes, dips to 0 lx for 2-7 s): keyboard stayed off" % len(SEQ))
 
 # the exact logged dips, real-time: 6 s and 7 s at 0 lx in a 250 lx cabin
-for d in (2, 4, 6, 7, 12):
+# 2.5.0: the screen dims fully after 8 s (was 12), so a 12 s dip is real darkness now
+for d in (2, 4, 6, 7):
     ons, _ = sim(lambda t: 0.0 if 30 <= t < 30 + d else 250.0, 90)
     assert not ons, (d, ons)
-print("0 lx dips of 2-12 s: keyboard stays off")
+print("0 lx dips of 2-7 s: keyboard stays off")
 
 # a real long tunnel / dark room: on after ~15 s of darkness, off at once after
 ons, offs = sim(lambda t: 0.0 if 30 <= t < 120 else 250.0, 150)
-assert ons and 30 + 15 <= ons[0][0] <= 30 + 22, ons
+assert ons and 30 + 10 <= ons[0][0] <= 30 + 16, ons
 assert offs and offs[-1][1] == 0 and offs[-1][0] - 120 <= 4, offs
 print("90 s darkness: on after %.1f s, off %.1f s after the light returned" % (ons[0][0] - 30, offs[-1][0] - 120))
 
