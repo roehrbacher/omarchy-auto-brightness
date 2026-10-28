@@ -27,4 +27,4 @@ def run(lux_at, secs):
 first, done, end = run(lambda t: 300 if t < 20 else 0, 60)
 print("cover at 300 lx: first dim after %.1f s, fully dark after %s s, end %.0f%%" % (first, done, end))
 assert first is not None and first <= 5.0, first
-assert done is not None and done <= 14.0, done
+assert done is not None and done <= 20.0, done  # 2.6.0: Apple dims 10x over ~10 s (was 14 s)

@@ -55,3 +55,20 @@ Idea and survey of the problem from
 [ziouf/omarchy-adaptive-brightness](https://github.com/ziouf/omarchy-adaptive-brightness)
 (reviewed at 2dd87df). No code was copied: that plugin samples the webcam,
 this one only uses the light sensors. MIT, see LICENSE.
+
+## 2.6.0: Apple-style timing
+
+Copied from Apple's patents (no habit learning, light sensor only):
+
+- Fade length follows the size of the change (US 2012/0019493): dimming 1.5x or 3x takes
+  ~5 s, 10x or more ~10 s; brightening 1.5x takes ~5 s, 2x or more 1.5 s. Eyes adapt
+  slower to darkness, so the screen never dims faster than it brightens.
+- In the dark it waits longer before dimming further (US 10,235,970): the settle wait
+  doubles at 0 lx and is normal from 10 lx up. Brightening back stays quick.
+- Already in place: a change must last (settle, spike median, jump rule) and be big
+  enough (12 % / 2 lx deadband); readings outside 0-60000 lx are ignored; keyboard light
+  only in low light; the keyboard's own firmware idle-off is left alone.
+
+Not 1:1: Apple's actual lux curve is unpublished; True Tone and per-frame ramps don't
+exist here; Apple's curve learning is left out on purpose. `omarchy-auto-brightness`
+with `"appleRamps": false` in the config goes back to the 2.5.0 fades.

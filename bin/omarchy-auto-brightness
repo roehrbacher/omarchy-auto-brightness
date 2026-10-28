@@ -48,8 +48,13 @@ DEFAULTS = {
                              # log-lux), so covering the sensor shows a reaction in ~5 s; short train dips
                              # (2-7 s) dim only part-way and come back in 1.5 s (Android: darkening 8 s)
     "dimBigRatio": 0.5,
-    "brightenSeconds": 1.5,
-    "dimSeconds": 4.0,       # 2.5.0: was 7 s (macOS ramps ~5 s)
+    "brightenSeconds": 1.5,  # 2.6.0: fastest brighten (2x or more); see ramp_seconds()
+    "dimSeconds": 4.0,       # 2.5.0: was 7 s (macOS ramps ~5 s); unused since 2.6.0 (appleRamps)
+    "appleRamps": True,      # 2.6.0: ramp length from the size of the change, Apple patent
+                             # US 2012/0019493: dim 1.5x/3x in ~5 s, 10x in ~10 s; brighten
+                             # 1.5x in ~5 s, 2x or more in 1-2 s (eyes adapt slower to dark)
+    "darkSlowLux": 10.0,     # 2.6.0: below this the settle wait grows (US 10,235,970: adjust
+    "darkSlowFactor": 1.0,   # slower in the dark, less so as it brightens): +100 % at 0 lx
     "luxDeadband": 0.12,   # ignore lux changes smaller than 12 %
     "luxAbsDeadband": 2.0, # ...and smaller than 2 lx (dark end: sensor wobbles 0 <-> 1 lx)
     "darkLux": 2.0,        # the curve treats 0..2 lx as fully dark (no 12-point step at 1 lx)
@@ -252,7 +257,7 @@ class Controller:
             elif c.get("dimHoldSeconds", 0):
                 self.dim_staged = False
                 win = [w for w in win if not big(w)]
-            if t - win[0][0] < c["settleSeconds"]:
+            if t - win[0][0] < self.settle_seconds(not win[-1][2]):
                 return
             vals = sorted(w[1] for w in win)
         if True:
@@ -266,6 +271,32 @@ class Controller:
                 if r > c["offsetResetRatio"] or r < 1 / c["offsetResetRatio"]:
                     self.ev(t, f"offset {self.offset:+.0f}% cleared (light moved {r:.2f}x)")
                     self.offset, self.anchor = 0.0, None
+
+    def settle_seconds(self, darker=True):
+        """settleSeconds, longer in the dark (linear: x(1+darkSlowFactor) at 0 lx, x1 at darkSlowLux).
+        Only for changes toward darker: coming back into the light stays quick."""
+        c = self.c
+        if not darker:
+            return c["settleSeconds"]
+        base, dl = c["settleSeconds"], c.get("darkSlowLux", 0)
+        if not dl or self.stable is None or self.stable >= dl:
+            return base
+        return base * (1 + c.get("darkSlowFactor", 0) * (1 - self.stable / dl))
+
+    def ramp_seconds(self, a, b):
+        """Fade length for a -> b (screen %)."""
+        c = self.c
+        up = b > a
+        if not c.get("appleRamps", True):
+            return c["brightenSeconds"] if up else c["dimSeconds"]
+        r = max(a, b, 1.0) / max(min(a, b), 1.0)
+        lg = math.log
+        if up:  # 1.5x -> 5 s, 2x and more -> brightenSeconds (1.5 s), log-interpolated
+            f = min(1.0, max(0.0, lg(r / 1.5) / lg(2 / 1.5)))
+            return 5.0 + (c["brightenSeconds"] - 5.0) * f
+        # dim: up to 3x -> 5 s, 10x and more -> 10 s
+        f = min(1.0, max(0.0, lg(r / 3) / lg(10 / 3)))
+        return 5.0 + 5.0 * f
 
     def implausible(self, lux):
         c, st = self.c, self.stable
@@ -303,9 +334,9 @@ class Controller:
         if self.ramp is None:
             if abs(want - cur_pct) < 1.0:
                 return None
-            dur = self.c["brightenSeconds"] if want > cur_pct else self.c["dimSeconds"]
+            dur = self.ramp_seconds(cur_pct, want)
             self.ramp = (t, cur_pct, want, dur)
-            self.ev(t, f"fade {cur_pct:.0f}% -> {want:.0f}% over {dur:g}s")
+            self.ev(t, f"fade {cur_pct:.0f}% -> {want:.0f}% over {dur:.1f}s")
         t0, a, b, dur = self.ramp
         p = 1.0 if dur <= 0 else min(1.0, (t - t0) / dur)
         p = p * p * (3 - 2 * p)  # smoothstep: soft start and end
