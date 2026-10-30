@@ -28,6 +28,8 @@ HOME = os.environ.get("HOME", "")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "omarchy", "auto-brightness.json")
 RUN = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
 STATE = os.path.join(RUN, "omarchy-auto-brightness.json")
+LOGDIR = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "omarchy-auto-brightness")
+DLOG = os.path.join(LOGDIR, "decisions.jsonl")
 HOLD_FLAG = os.path.join(RUN, "omarchy-walk-away.dimmed")  # walk-away lock owns the screen
 
 DEFAULTS = {
@@ -68,8 +70,14 @@ DEFAULTS = {
     "jumpHugeLux": 20000.0,  # ...or above this from a dark stable value
     "wakeSeconds": 3.0,      # 2.7.0: after resume / lid open, follow the sensor at once for this long
     "wakeFadeSeconds": 0.4,  # ...with short fades, and set the keyboard light without waiting
+    "glitchQuarantineSeconds": 30.0,  # 2.8.0: a sensor that just reported an impossible value
+                                      # (> MAX_LUX, e.g. 170063 lx) is ignored this long
+    "disagreeRatio": 20.0,   # 2.8.0: one sensor > jumpHugeLux while the other says < jumpDarkLux
+                             # (and 20x lower): a single-sensor HID burst, use the lower one
+    "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
 }
 MAX_LUX = 60000
+VERSION = "2.8.0"
 
 
 def load_conf():
@@ -120,16 +128,20 @@ def sensors():
     return out
 
 
-def lux_once(sens):
-    """One raw sample per sensor (None = unreadable or impossible)."""
+def lux_raw(sens):
+    """One raw sample per sensor in lux (None = unreadable), not range-checked."""
     out = []
     for path, scale in sens:
         try:
-            lux = float(read(path)) * scale
+            out.append(float(read(path)) * scale)
         except (TypeError, ValueError):
-            lux = None
-        out.append(lux if lux is not None and 0 <= lux <= MAX_LUX else None)
+            out.append(None)
     return out
+
+
+def lux_once(sens):
+    """One raw sample per sensor (None = unreadable or impossible)."""
+    return [v if v is not None and 0 <= v <= MAX_LUX else None for v in lux_raw(sens)]
 
 
 def lux_now(sens):
@@ -144,20 +156,47 @@ class SensorFilter:
     two sensors, so max() of raw samples saw a >2 s 'sunlight' spike. A median
     per sensor needs a change to hold for over half the window."""
 
-    def __init__(self, n, secs):
+    def __init__(self, n, secs, c=None):
         self.secs, self.hist = secs, [[] for _ in range(n)]
+        self.c = c if c is not None else DEFAULTS
+        self.bad_until = [-1e9] * n   # 2.8.0: per-sensor quarantine after an impossible value
+        self.medians = [None] * n
+        self.note = ""                # why a sensor was ignored this sample (for the log)
 
     def feed(self, t, samples):
-        best = None
-        for h, v in zip(self.hist, samples):
+        """samples: raw lux per sensor (None = unreadable). Values outside
+        0..MAX_LUX are HID garbage: they quarantine that sensor for a while."""
+        c, notes = self.c, []
+        q = c.get("glitchQuarantineSeconds", 0)
+        for i, (h, v) in enumerate(zip(self.hist, samples)):
+            if v is not None and not (0 <= v <= MAX_LUX):
+                if t >= self.bad_until[i]:
+                    notes.append(f"sensor{i} impossible {v:.0f} lx, quarantined {q:.0f}s")
+                self.bad_until[i] = t + q
+                h.clear()
+                v = None
             if v is not None:
                 h.append((t, v))
             while h and t - h[0][0] > self.secs:
                 h.pop(0)
+            self.medians[i] = None
             if h:
                 vals = sorted(x for _, x in h)
-                m = vals[(len(vals) - 1) // 2]  # lower median: ties never favour a spike
-                best = m if best is None else max(best, m)
+                self.medians[i] = vals[(len(vals) - 1) // 2]  # lower median: ties never favour a spike
+        ok = [i for i, m in enumerate(self.medians) if m is not None and t >= self.bad_until[i]]
+        if not ok:  # every sensor quarantined: fall back to whatever is left
+            ok = [i for i, m in enumerate(self.medians) if m is not None]
+            if ok and any(t < b for b in self.bad_until):
+                notes.append("all sensors quarantined")
+        vals = [self.medians[i] for i in ok]
+        best = max(vals) if vals else None
+        if len(vals) >= 2:
+            lo = min(vals)
+            if (best > c.get("jumpHugeLux", 20000.0) and lo < c.get("jumpDarkLux", 50.0)
+                    and (best + 1) / (lo + 1) > c.get("disagreeRatio", 20.0)):
+                notes.append(f"sensors disagree ({best:.0f} vs {lo:.1f} lx), using the lower")
+                best = lo
+        self.note = "; ".join(notes)
         return best
 
     def clear(self):
@@ -476,6 +515,30 @@ def log(*a):
     print(*a, flush=True)
 
 
+class DecisionLog:
+    """2.8.0: structured JSON-lines log of every brightness decision, for
+    investigating bugs later. Size-capped: at logMaxBytes the file moves to
+    decisions.jsonl.1 (one old copy kept). Only light levels and states."""
+
+    def __init__(self, path=DLOG, max_bytes=1000000):
+        self.path, self.max = path, max_bytes
+        self.last_beat = -1e9
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except OSError:
+            pass
+
+    def write(self, **rec):
+        rec = {"ts": datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"), **rec}
+        try:
+            if os.path.exists(self.path) and os.path.getsize(self.path) > self.max:
+                os.replace(self.path, self.path + ".1")
+            with open(self.path, "a") as f:
+                f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        except OSError:
+            pass
+
+
 def hold_reason(enabled, lid_closed, walk_away, screen_off, have_reading):
     """Why the daemon is not adjusting ("auto" = adjusting). Being locked is
     deliberately not a reason: on the lock screen brightness keeps following
@@ -506,7 +569,10 @@ def run():
     log(f"sensors={[p for p, _ in sens]} backlight={bl.name} kbd={kbd.name if kbd else None}")
     c = load_conf()
     ctl = Controller(c)
-    filt = SensorFilter(len(sens), c["sensorMedianSeconds"])
+    filt = SensorFilter(len(sens), c["sensorMedianSeconds"], c)
+    dlog = DecisionLog(DLOG, c.get("logMaxBytes", 1000000))
+    trigger = "start"
+    dlog.write(event="start", version=VERSION, sensors=len(sens))
     held = False
     conf_mtime = None
     last_set = None          # raw we last wrote
@@ -518,23 +584,32 @@ def run():
         if m != conf_mtime:
             c, conf_mtime = load_conf(), m
             ctl.c = c
+            filt.c = c
         t = time.monotonic()
         # resume detection: wall clock jumped further than the monotonic one
         wall = time.time()
         if (wall - last_wall) - (t - last_mono) > 20:
             ctl.reset(t, "resume")
+            trigger = "resume"
             filt.clear()
             last_set = None
         last_wall, last_mono = wall, t
         closed = lid_closed()
         if was_closed and not closed:
             ctl.reset(t, "lid opened")
+            trigger = "lid opened"
             filt.clear()
             last_set = None
         was_closed = closed
         ctl.new_day(t, datetime.date.today().isoformat())
-        ctl.feed_lux(t, filt.feed(t, lux_once(sens)))
-        for et, msg in ctl.events:
+        raw = lux_raw(sens)
+        filtered = filt.feed(t, raw)
+        ctl.feed_lux(t, filtered)
+        msgs = [msg for _, msg in ctl.events]
+        if filt.note:
+            log(filt.note)
+            msgs.insert(0, filt.note)
+        for msg in [m for _, m in ctl.events]:
             log(msg)
         ctl.events.clear()
 
@@ -564,14 +639,32 @@ def run():
                 # user's own key presses are never overridden
                 if want is not None and want != ctl.kbd_want:
                     log(f"lux={ctl.stable:.1f} keyboard -> {want}")
+                    msgs.append(f"keyboard -> {want}")
                     kbd.set(want)
                     ctl.kbd_want = want
             for et, msg in ctl.events:
                 log(msg)
+                msgs.append(msg)
             ctl.events.clear()
         else:
             last_set = None
             ctl.ramp = None
+        if reason != getattr(dlog, "last_reason", None):
+            msgs.append(f"mode {getattr(dlog, 'last_reason', None)} -> {reason}")
+            dlog.last_reason = reason
+        if msgs or t - dlog.last_beat >= 60:
+            tg = ctl.target()
+            dlog.write(event="; ".join(msgs) if msgs else "heartbeat", trigger=trigger,
+                       raw=[None if v is None else round(v, 1) for v in raw],
+                       median=[None if v is None else round(v, 1) for v in filt.medians],
+                       filtered=None if filtered is None else round(filtered, 1),
+                       stable=None if ctl.stable is None else round(ctl.stable, 1),
+                       target=None if tg is None else round(tg, 1),
+                       current=round(bl.get() / bl.max * 100, 1),
+                       mode=reason, wake=ctl.waking(t), offset=round(ctl.offset, 1),
+                       kbd=ctl.kbd_want, fade=None if ctl.ramp is None else [round(ctl.ramp[1]), round(ctl.ramp[2]), ctl.ramp[3]])
+            dlog.last_beat = t
+            trigger = "sensor"
 
         write_state({
             "enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"],

@@ -5,6 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.8.0: one light sensor alone sending garbage (~43000 lx or impossible 170000 lx in a dark room, for 10+ s) no longer maxes the screen: a sensor that reports an impossible value is ignored for 30 s, and when one sensor says sunlight while the other says dark, the lower one is used. Every brightness decision is now logged (raw and filtered lux, target, current, mode, trigger) to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
 - 2.7.0: waking from suspend or opening the lid reads the sensor fresh and follows it at once for 3 s (0.4 s fades, keyboard light without the 3 s wait), so a dark room is dark within ~3 s. Fixes the keyboard light never turning on when the dark reading landed inside the 2 lx deadband after a part-way dim.
 - 2.6.1: no behaviour change. Confirms (with a test) that brightness keeps following the light on the lock screen; the README wrongly said it held while locked. Removed the unused lock check.
 - 2.5.0: faster dimming. A big drop (sensor covered, lights off) now dims part-way after ~5 s (`dimQuickSeconds` 2.5 s after the 4 s sensor median: half the drop, counted in log-lux) and fully after ~10 s (`dimHoldSeconds` 8, was 12); fades down take 4 s (`dimSeconds`, was 7). Covering the sensor at 300 lx: first dim after 5 s, fully dark after ~14 s (was 14.5 s / ~21 s). Cost: train dips of 4-7 s now dim part-way (in the 23 Oct replay down to ~37 % instead of staying at ~65 %) and come back within ~1.5 s; 2 s dips still do nothing. Brightening and the spike/burst protection are unchanged. The keyboard light waits for the full dim (on after ~13 s of darkness).
@@ -37,7 +38,7 @@ Version 2 works like a MacBook (no habit learning):
 `omarchy-auto-brightness sensors` shows what the light sensors expose (on the
 XPS 14 the second one also reports colour temperature and chromaticity x/y).
 
-Tests: `python3 tests/test_curve.py && python3 tests/simulate.py` (timeline log).
+Tests: `for f in tests/test_*.py; do python3 $f; done` (`tests/simulate.py` still has pre-2.6.0 timings).
 
 ## Install / uninstall
 
