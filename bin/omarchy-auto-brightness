@@ -66,6 +66,8 @@ DEFAULTS = {
     "jumpFactor": 5.0,     # implausible: from < jumpDarkLux to > jumpFactor*stable + jumpAbsLux
     "jumpAbsLux": 500.0,
     "jumpHugeLux": 20000.0,  # ...or above this from a dark stable value
+    "wakeSeconds": 3.0,      # 2.7.0: after resume / lid open, follow the sensor at once for this long
+    "wakeFadeSeconds": 0.4,  # ...with short fades, and set the keyboard light without waiting
 }
 MAX_LUX = 60000
 
@@ -198,18 +200,29 @@ class Controller:
         self.kbd_want = None
         self.kbd_dark = None
         self.ramp = None
+        self.dim_staged = False
+        self.wake_until = t + self.c.get("wakeSeconds", 0)  # 2.7.0: fresh read on wake
+
+    def waking(self, t):
+        return t is not None and t < getattr(self, "wake_until", -1)
 
     def feed_lux(self, t, lux):
         c = self.c
         if lux is None:
             return
-        if self.stable is None:
+        if self.stable is None or self.waking(t):
+            # 2.7.0: right after resume the first samples can still be the
+            # pre-suspend value; follow every new reading without settle waits
+            if self.stable is not None and abs(lux - self.stable) >= 0.05:
+                self.ev(t, f"lux {self.stable:.1f} -> {lux:.1f} (wake)")
             self.stable = lux
             self.window = []
+            self.dim_staged = False
             return
         ratio = (lux + 1) / (self.stable + 1)
         if abs(ratio - 1) < c["luxDeadband"] or abs(lux - self.stable) < c.get("luxAbsDeadband", 0):
             self.window = []
+            self.dim_staged = False  # 2.7.0: a part-way dim that lands within the deadband is final
             return
         side = ratio > 1
         if self.window and self.window[0][2] != side:
@@ -334,7 +347,7 @@ class Controller:
         if self.ramp is None:
             if abs(want - cur_pct) < 1.0:
                 return None
-            dur = self.ramp_seconds(cur_pct, want)
+            dur = self.c.get("wakeFadeSeconds", 0.4) if self.waking(t) else self.ramp_seconds(cur_pct, want)
             self.ramp = (t, cur_pct, want, dur)
             self.ev(t, f"fade {cur_pct:.0f}% -> {want:.0f}% over {dur:.1f}s")
         t0, a, b, dur = self.ramp
@@ -367,7 +380,7 @@ class Controller:
         if getattr(self, "dim_staged", False) and want is not None and want > cur:
             self.kbd_dark = None
             return self.kbd_want
-        hold = c.get("kbdOnSeconds", 0)
+        hold = 0 if self.waking(t) else c.get("kbdOnSeconds", 0)
         if t is None or not hold or want is None or want <= cur:
             self.kbd_dark = None
             return want
