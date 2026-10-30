@@ -5,6 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.6.1: no behaviour change. Confirms (with a test) that brightness keeps following the light on the lock screen; the README wrongly said it held while locked. Removed the unused lock check.
 - 2.5.0: faster dimming. A big drop (sensor covered, lights off) now dims part-way after ~5 s (`dimQuickSeconds` 2.5 s after the 4 s sensor median: half the drop, counted in log-lux) and fully after ~10 s (`dimHoldSeconds` 8, was 12); fades down take 4 s (`dimSeconds`, was 7). Covering the sensor at 300 lx: first dim after 5 s, fully dark after ~14 s (was 14.5 s / ~21 s). Cost: train dips of 4-7 s now dim part-way (in the 23 Oct replay down to ~37 % instead of staying at ~65 %) and come back within ~1.5 s; 2 s dips still do nothing. Brightening and the spike/burst protection are unchanged. The keyboard light waits for the full dim (on after ~13 s of darkness).
 - 2.4.0: the screen gets the same wait: a drop to under half the light (`dimBigRatio`) must hold for 12 s (`dimHoldSeconds`, every sample) before the screen dims, so 2-7 s train dips (250 -> 0 lx) no longer fade it 67% -> 1%. Smaller dims and all brightening stay quick. The keyboard wait (`kbdOnSeconds`) is now 3 s on top of that, so a real dark tunnel or room still lights the keys after ~15-17 s.
 - 2.3.0: keyboard light like a MacBook: it only turns on (or goes to level 2) after the darkness has lasted 15 s (`kbdOnSeconds`), and turns off as soon as it is bright again. Short 0 lx dips on a train (shadows, tunnels, sensor dropouts of 2-7 s in a 200-400 lx cabin) no longer switch it on.
@@ -29,7 +30,7 @@ Version 2 works like a MacBook (no habit learning):
   your own key presses stick. `kbdLevel2Below: 0` disables level 2. The inactivity timeout is the Dell firmware's own
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.
-- Holds while the lid is closed, the screen is locked, or the walk-away lock has dimmed it.
+- Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or the walk-away lock has dimmed it.
 - Writes through `brightnessctl` (logind), so the user service needs no root.
 
 `omarchy-auto-brightness sensors` shows what the light sensors expose (on the

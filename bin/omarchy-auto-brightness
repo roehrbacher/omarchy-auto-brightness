@@ -427,14 +427,6 @@ def screen_off():
     return cached("dpms", 2, f)
 
 
-def locked():
-    def f():
-        r = subprocess.run(["qs", "ipc", "-p", "/usr/share/omarchy/shell", "call", "lock", "isLocked"],
-                           capture_output=True, text=True, timeout=4)
-        return r.stdout.strip() == "true"
-    return cached("lock", 10, f)
-
-
 def media_playing():
     """Any MPRIS player Playing (browsers, mpv, spotify...)."""
     out = subprocess.run(["busctl", "--user", "--json=short", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus",
@@ -469,6 +461,24 @@ def write_state(d):
 
 def log(*a):
     print(*a, flush=True)
+
+
+def hold_reason(enabled, lid_closed, walk_away, screen_off, have_reading):
+    """Why the daemon is not adjusting ("auto" = adjusting). Being locked is
+    deliberately not a reason: on the lock screen brightness keeps following
+    the light. Only a DPMS-off screen (the lock screen's idle blank), the
+    walk-away dim, a closed lid or "off" hold it. screen_off is a callable."""
+    if not enabled:
+        return "off"
+    if lid_closed:
+        return "lid closed"
+    if walk_away:
+        return "walk-away dim"
+    if screen_off():
+        return "screen off"
+    if not have_reading:
+        return "no reading"
+    return "auto"
 
 
 def run():
@@ -515,21 +525,7 @@ def run():
             log(msg)
         ctl.events.clear()
 
-        if not c["enabled"]:
-            reason = "off"
-        elif closed:
-            reason = "lid closed"
-        elif os.path.exists(HOLD_FLAG):
-            reason = "walk-away dim"
-        elif screen_off():
-            # The lock screen blanks via DPMS and saves/restores the keyboard
-            # light itself. While locked but lit we keep adjusting (the lock
-            # screen used to freeze at the old level, keyboard dark).
-            reason = "screen off"
-        elif ctl.stable is None:
-            reason = "no reading"
-        else:
-            reason = "auto"
+        reason = hold_reason(c["enabled"], closed, os.path.exists(HOLD_FLAG), screen_off, ctl.stable is not None)
 
         cur = bl.get()
         busy = False
