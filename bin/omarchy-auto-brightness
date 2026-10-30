@@ -74,10 +74,11 @@ DEFAULTS = {
                                       # (> MAX_LUX, e.g. 170063 lx) is ignored this long
     "disagreeRatio": 20.0,   # 2.8.0: one sensor > jumpHugeLux while the other says < jumpDarkLux
                              # (and 20x lower): a single-sensor HID burst, use the lower one
+    "glitchEpisodeSeconds": 90.0,  # 2.8.1: after any impossible value, no dark -> >jumpHugeLux jump
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
 }
 MAX_LUX = 60000
-VERSION = "2.8.0"
+VERSION = "2.8.1"
 
 
 def load_conf():
@@ -162,6 +163,7 @@ class SensorFilter:
         self.bad_until = [-1e9] * n   # 2.8.0: per-sensor quarantine after an impossible value
         self.medians = [None] * n
         self.standing = set()
+        self.last_out = None          # 2.8.1: last value handed to the controller
         self.note = ""                # why a sensor was ignored this sample (for the log)
 
     def feed(self, t, samples):
@@ -191,12 +193,28 @@ class SensorFilter:
                 notes.append("all sensors quarantined")
         vals = [self.medians[i] for i in ok]
         best = max(vals) if vals else None
-        if len(vals) >= 2:
-            lo = min(vals)
+        # 2.8.1: the cross-sensor check looks at EVERY sensor with a median,
+        # quarantined or not. On Oct 30 22:31 sensor1's quarantine ran out
+        # first while sensor0 (honestly reading 1 lx) was still quarantined,
+        # so sensor1's in-range 43021 lx burst won alone and was accepted.
+        allv = [m for m in self.medians if m is not None]
+        if any(t < b + c.get("glitchEpisodeSeconds", 90.0) for b in self.bad_until):
+            self.last_glitch = t
+        if len(allv) >= 2 and best is not None:
+            lo = min(allv)
             if (best > c.get("jumpHugeLux", 20000.0) and lo < c.get("jumpDarkLux", 50.0)
                     and (best + 1) / (lo + 1) > c.get("disagreeRatio", 20.0)):
                 notes.append(f"sensors disagree ({best:.0f} vs {lo:.1f} lx), using the lower")
                 best = lo
+        # 2.8.1: during a glitch episode (a sensor went impossible in the last
+        # glitchEpisodeSeconds) a dark -> sunlight jump is not believed at all
+        if (best is not None and getattr(self, "last_glitch", None) == t
+                and self.last_out is not None and self.last_out < c.get("jumpDarkLux", 50.0)
+                and best > c.get("jumpHugeLux", 20000.0)):
+            notes.append(f"glitch episode, ignoring {best:.0f} lx")
+            best = self.last_out
+        if best is not None:
+            self.last_out = best
         # repeat-free: a standing condition is noted once, when it starts
         cond = [n for n in notes if not n.startswith("sensor")]
         new = [n for n in notes if n.startswith("sensor")] + [n for n in cond if n.split(" (")[0] not in self.standing]
