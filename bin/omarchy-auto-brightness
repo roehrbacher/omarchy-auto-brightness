@@ -161,6 +161,7 @@ class SensorFilter:
         self.c = c if c is not None else DEFAULTS
         self.bad_until = [-1e9] * n   # 2.8.0: per-sensor quarantine after an impossible value
         self.medians = [None] * n
+        self.standing = set()
         self.note = ""                # why a sensor was ignored this sample (for the log)
 
     def feed(self, t, samples):
@@ -196,7 +197,11 @@ class SensorFilter:
                     and (best + 1) / (lo + 1) > c.get("disagreeRatio", 20.0)):
                 notes.append(f"sensors disagree ({best:.0f} vs {lo:.1f} lx), using the lower")
                 best = lo
-        self.note = "; ".join(notes)
+        # repeat-free: a standing condition is noted once, when it starts
+        cond = [n for n in notes if not n.startswith("sensor")]
+        new = [n for n in notes if n.startswith("sensor")] + [n for n in cond if n.split(" (")[0] not in self.standing]
+        self.standing = {n.split(" (")[0] for n in cond}
+        self.note = "; ".join(new)
         return best
 
     def clear(self):
