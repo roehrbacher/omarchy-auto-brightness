@@ -602,8 +602,8 @@ def run():
             last_set = None
         was_closed = closed
         ctl.new_day(t, datetime.date.today().isoformat())
-        raw = lux_raw(sens)
-        filtered = filt.feed(t, raw)
+        samples = lux_raw(sens)
+        filtered = filt.feed(t, samples)
         ctl.feed_lux(t, filtered)
         msgs = [msg for _, msg in ctl.events]
         if filt.note:
@@ -655,7 +655,7 @@ def run():
         if msgs or t - dlog.last_beat >= 60:
             tg = ctl.target()
             dlog.write(event="; ".join(msgs) if msgs else "heartbeat", trigger=trigger,
-                       raw=[None if v is None else round(v, 1) for v in raw],
+                       raw=[None if v is None else round(v, 1) for v in samples],
                        median=[None if v is None else round(v, 1) for v in filt.medians],
                        filtered=None if filtered is None else round(filtered, 1),
                        stable=None if ctl.stable is None else round(ctl.stable, 1),
