@@ -78,7 +78,7 @@ DEFAULTS = {
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
 }
 MAX_LUX = 60000
-VERSION = "2.8.1"
+VERSION = "2.9.0"
 
 
 def load_conf():
@@ -417,7 +417,11 @@ class Controller:
         p = p * p * (3 - 2 * p)  # smoothstep: soft start and end
         if p >= 1.0:
             self.ramp = None
-        return a + (b - a) * p
+            return b
+        # 2.9.0: interpolate in log space (perceived brightness), like macOS:
+        # equal-looking steps at 5% and at 80%, no fast visible jumps at the dim end.
+        la, lb = math.log(max(a, 0.5)), math.log(max(b, 0.5))
+        return math.exp(la + (lb - la) * p)
 
     def kbd_level(self, kbd_max, t=None):
         """Wanted keyboard level or None (= leave as is). Like a MacBook:
@@ -468,9 +472,22 @@ class Dev:
     def get(self):
         return int(read(self.path + "/brightness", "0") or 0)
 
+    _bus = None
+
     def set(self, raw):
-        # brightnessctl goes through logind (SetBrightness): no sudo.
-        subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))], check=False)
+        # logind SetBrightness (no sudo) over one kept D-Bus connection, so fades
+        # can write ~60 times a second; brightnessctl (same call) as fallback.
+        try:
+            if Dev._bus is None:
+                from gi.repository import Gio, GLib
+                Dev._bus = (Gio.bus_get_sync(Gio.BusType.SYSTEM, None), GLib)
+            bus, GLib = Dev._bus
+            sub = os.path.basename(os.path.dirname(self.path))
+            bus.call_sync("org.freedesktop.login1", "/org/freedesktop/login1/session/auto",
+                          "org.freedesktop.login1.Session", "SetBrightness",
+                          GLib.Variant("(ssu)", (sub, self.name, int(raw))), None, 0, 2000, None)
+        except Exception:
+            subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))], check=False)
 
 
 def lid_closed():
@@ -696,7 +713,7 @@ def run():
             "target": None if ctl.target() is None else round(ctl.target()),
             "offset": round(ctl.offset), "mode": reason,
         })
-        time.sleep(0.1 if busy else 0.5)
+        time.sleep(1 / 60 if busy else 0.5)  # 2.9.0: 60 Hz while fading (was 10 Hz)
 
 
 def describe_sensors():

@@ -5,6 +5,7 @@ light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo
 
 Version 2 works like a MacBook (no habit learning):
 
+- 2.9.0: smoother fades. Brightness now changes about 60 times a second during a fade (was 10) and moves in even perceived steps (log scale, like macOS) instead of straight lines, so no step is visible: brightening 5% -> 80% used to jump up to 39% at once, now at most ~5% (relative) per 1/60 s. Writes go to logind over one kept D-Bus connection (brightnessctl as fallback).
 - 2.8.1: fixes another full-brightness jump (Oct 30 22:31): when the two sensors glitched one after the other, the sensor still reading the real dark room was ignored and the other one's 43000 lx won. The sensor cross-check now always includes every sensor, and for 90 s after any impossible reading a dark -> sunlight jump is not believed at all.
 - 2.8.0: one light sensor alone sending garbage (~43000 lx or impossible 170000 lx in a dark room, for 10+ s) no longer maxes the screen: a sensor that reports an impossible value is ignored for 30 s, and when one sensor says sunlight while the other says dark, the lower one is used. Every brightness decision is now logged (raw and filtered lux, target, current, mode, trigger) to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
 - 2.7.0: waking from suspend or opening the lid reads the sensor fresh and follows it at once for 3 s (0.4 s fades, keyboard light without the 3 s wait), so a dark room is dark within ~3 s. Fixes the keyboard light never turning on when the dark reading landed inside the 2 lx deadband after a part-way dim.
@@ -34,7 +35,7 @@ Version 2 works like a MacBook (no habit learning):
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.
 - Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or the walk-away lock has dimmed it.
-- Writes through `brightnessctl` (logind), so the user service needs no root.
+- Writes through logind's SetBrightness (D-Bus, `brightnessctl` as fallback), so the user service needs no root.
 
 `omarchy-auto-brightness sensors` shows what the light sensors expose (on the
 XPS 14 the second one also reports colour temperature and chromaticity x/y).
