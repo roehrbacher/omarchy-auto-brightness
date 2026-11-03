@@ -54,7 +54,7 @@ for d in (4, 6, 7):
     assert lo >= partial_floor(250) - 1 and end >= ab.curve_pct(250, C) - 1, (d, lo, end)
 print("0 lx dips of 4-7 s: only part-way (>= %.0f%%), then back" % partial_floor(250))
 lo, first, cur = sim(lambda t: 0.0 if t >= 30 else 250.0, 90)
-assert first is not None and first - 30 <= 6 and cur <= 2, (first, cur)
+assert first is not None and first - 30 <= 7 and cur <= 2, (first, cur)  # 2.10.0: was 6 s
 print("lasting darkness: dimming starts after %.1f s, ends at %.0f%%" % (first - 30, cur))
 lo, first, cur = sim(lambda t: 150.0 if t >= 30 else 250.0, 60)
 assert first is not None and first - 30 <= 5, first

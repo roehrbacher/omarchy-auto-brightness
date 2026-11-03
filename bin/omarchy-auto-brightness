@@ -7,7 +7,7 @@ No camera, no habit learning. v2 works like a MacBook:
     offset is dropped when the room light moves >2.5x from where you set it,
     after resume / lid open, or on the next day
   - brightens fast (~1.5 s), dims in ~4 s fades; a big drop (sensor covered, lights
-    off) dims part-way after ~5 s and fully after ~10 s (2.5.0)
+    off) dims part-way after ~6.5 s and fully after ~20 s (2.5.0, 2.10.0)
   - ignores light changes under 12 % and spikes/shadows shorter than 2 s;
     the brighter of the two sensors wins
   - never dims while a fullscreen video plays
@@ -62,6 +62,8 @@ DEFAULTS = {
     "darkLux": 2.0,        # the curve treats 0..2 lx as fully dark (no 12-point step at 1 lx)
     "settleSeconds": 2.0,  # a change must last this long (spikes, shadows)
     "offsetResetRatio": 2.5,
+    "zeroTrustSeconds": 3.5,   # 2.10.0: an exact 0 lx from a lit sensor is a HID dropout until it held this long (seen: up to 2.5 s)
+    "zeroDropoutLux": 20.0,    # ...and only counts as a dropout when that sensor's median was above this
     "sensorMedianSeconds": 4.0,  # per-sensor median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
     "jumpSeconds": 10.0,   # an implausible jump (dark -> sunlight) must hold this long, every sample high
     "jumpDarkLux": 50.0,   # "dark" stable value for the jump rule
@@ -78,7 +80,7 @@ DEFAULTS = {
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
 }
 MAX_LUX = 60000
-VERSION = "2.9.0"
+VERSION = "2.10.0"
 
 
 def load_conf():
@@ -165,6 +167,7 @@ class SensorFilter:
         self.standing = set()
         self.last_out = None          # 2.8.1: last value handed to the controller
         self.note = ""                # why a sensor was ignored this sample (for the log)
+        self.zero_since = [None] * n  # 2.10.0: start of a run of exact-0 samples per sensor
 
     def feed(self, t, samples):
         """samples: raw lux per sensor (None = unreadable). Values outside
@@ -178,6 +181,22 @@ class SensorFilter:
                 self.bad_until[i] = t + q
                 h.clear()
                 v = None
+            # 2.10.0: Nov 3 11:15-12:03 both XPS HID sensors kept dropping to
+            # exactly 0 for 0.5-2.5 s at a time (106000 raw -> 0 -> 106000)
+            # in an unchanged room; the lower median then read 0 and the
+            # screen dimmed part-way and came back. A lit sensor's exact 0 is
+            # ignored unless it holds zeroTrustSeconds (real darkness still wins).
+            if v == 0:
+                if self.zero_since[i] is None:
+                    self.zero_since[i] = t
+                m = self.medians[i]
+                lit = m is not None and c.get("zeroDropoutLux", 20.0) < m <= c.get("jumpHugeLux", 20000.0)
+                if lit and t - self.zero_since[i] < c.get("zeroTrustSeconds", 8.0):
+                    v = None
+                elif lit:
+                    h.clear()  # held long enough: drop the old light samples at once
+            elif v is not None:
+                self.zero_since[i] = None
             if v is not None:
                 h.append((t, v))
             while h and t - h[0][0] > self.secs:
