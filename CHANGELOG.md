@@ -2,6 +2,17 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.12.0
+
+Popup round 2: a live status line, a simpler keyboard section, live sliders and live lux.
+
+- Status line under the title works like stock Bluetooth/Tailscale. In normal operation it cycles every 2.8 s with the same fade: "Following the light · N lx", "Screen at N %" or "Your +N % held", "Dark room · Keyboard light N" when the light is on, and "Reading the room". Special states show one line: "Dimming to N %", "Brightening to N %", "Holding for video", "Ignoring a sensor glitch", "Awake · matching the room", "Held by walk-away", "Paused · screen off", "Paused · lid closed", "Waiting for the sensor", "Turned off", "Service not running". The state file has the new fields for this: `luxNow`, `fadeTo`, `glitch`, `videoHold`, `waking`, `dark`.
+- Keyboard section: the Off/1/2 buttons are gone (the laptop has a key for that; `kbd-level` stays in the CLI). One switch, "Follow the room light", for the existing `keyboard` setting, with help text on what auto does.
+- Sliders are live. Before, the value label only moved after release, the knob jumped back to the old value on release until the CLI answered, and the screen only changed after the daemon's next 0.5 s pass plus a normal 1.5 to 10 s fade. Measured offscreen (drag min 8 -> 40 % in 2 s): label never moved during the drag, screen first changed 2.3 s after the drag started and reached 40 % 1.76 s after release. Now the label follows every move (median 0 ms, max 20 ms), the knob never jumps back, the screen starts moving after 134 ms, trails the finger by about 5 points (0.3 s) and reaches 40 % 135 ms after release. The popup sends the newest value, one CLI call at a time. The daemon follows a min/max change with 0.15 s fades for 2 s (`previewSeconds`, `previewFadeSeconds`). Reads of the state file never override a value you just set until the daemon reports it.
+- Live lux. The popup showed the settled lux the screen follows, 4 to 5 s behind the room, and on a big drop first a part-way value (200 -> 40 lx showed 89.8 lx after 4.7 s). It now shows `luxNow`: the current sample with the glitch rules (range, quarantine, 0 lx drop-outs, sensors disagreeing, glitch episode) but without the 4 s median. Measured: 4 to 61 ms after the sensor change (14 changes). Test: `tests/test_popup_state.py`.
+- With the popup open the daemon samples at 10 Hz (popup touches `$XDG_RUNTIME_DIR/omarchy-auto-brightness.watch` every second; stale after 2.5 s). The popup re-reads the state file on change (inotify) instead of every 0.25 s; closed, every 10 s, no process started.
+- Popup font is `Style.font.menuFamily`; "NOW N %" is `Style.font.bodySmall` instead of caption.
+
 ## 2.11.0
 
 New popup layout, manual keyboard light levels, and the popup no longer lags.

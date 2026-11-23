@@ -1,7 +1,7 @@
-"""2.11.0: the popup's Off / 1 / 2 buttons (CLI `kbd-level N`). The level is
-written like a key press and the daemon is not told, so the popup help says:
-auto changes it again only when the room moves into another keyboard range
-(or after the screen wakes). This checks exactly that against the real loop:
+"""2.11.0: CLI `kbd-level N` (2.12.0: no longer in the popup; the hardware key
+does the same). The level is written like a key press and the daemon is not
+told, so the popup help says: auto keeps your level until the room changes
+enough for another level (or the screen wakes). This checks exactly that against the real loop:
 fake sysfs files in a temp dir, stubbed D-Bus/hyprctl, fake clock."""
 import atexit, contextlib, importlib.machinery, importlib.util, io, json, os, shutil, tempfile
 tmp = tempfile.mkdtemp(prefix="ab-kbd-")

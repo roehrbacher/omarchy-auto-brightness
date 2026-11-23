@@ -34,6 +34,7 @@ STATE = os.path.join(RUN, "omarchy-auto-brightness.json")
 LOGDIR = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), "omarchy-auto-brightness")
 DLOG = os.path.join(LOGDIR, "decisions.jsonl")
 HOLD_FLAG = os.path.join(RUN, "omarchy-walk-away.dimmed")  # walk-away lock owns the screen
+WATCH_FLAG = os.path.join(RUN, "omarchy-auto-brightness.watch")  # 2.12.0: the popup is open (touched every 1 s)
 
 DEFAULTS = {
     "enabled": True,
@@ -81,9 +82,11 @@ DEFAULTS = {
                              # (and 20x lower): a single-sensor HID burst, use the lower one
     "glitchEpisodeSeconds": 90.0,  # 2.8.1: after any impossible value, no dark -> >jumpHugeLux jump
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
+    "previewSeconds": 2.0,       # 2.12.0: after a min/max change, follow it at once this long...
+    "previewFadeSeconds": 0.15,  # ...with fades this short (slider drag in the popup)
 }
 MAX_LUX = 60000
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 
 
 def load_conf():
@@ -192,12 +195,16 @@ class SensorFilter:
         self.note = ""                # why a sensor was ignored this sample (for the log)
         self.zero_since = [None] * n  # 2.10.0: start of a run of exact-0 samples per sensor
         self.last_glitch = None       # last sample inside a glitch episode
+        self.live = None              # 2.12.0: this sample's lux, glitch rules but no median (popup)
+        self.ignoring = False         # 2.12.0: a glitch rule dropped or replaced a reading this sample
 
     def feed(self, t, samples):
         """samples: raw lux per sensor (None = unreadable). Values outside
         0..MAX_LUX are HID garbage: they quarantine that sensor for a while."""
         c, notes = self.c, []
         q = c["glitchQuarantineSeconds"]
+        now = [None] * len(samples)
+        ignoring = False
         for i, (h, v) in enumerate(zip(self.hist, samples)):
             if v is not None and not (0 <= v <= MAX_LUX):
                 if t >= self.bad_until[i]:
@@ -217,15 +224,19 @@ class SensorFilter:
                 lit = m is not None and c["zeroDropoutLux"] < m <= c["jumpHugeLux"]
                 if lit and t - self.zero_since[i] < c["zeroTrustSeconds"]:
                     v = None
+                    ignoring = True
                 elif lit:
                     h.clear()  # held long enough: drop the old light samples at once
             elif v is not None:
                 self.zero_since[i] = None
             if v is not None:
                 h.append((t, v))
+                now[i] = v
             while h and t - h[0][0] > self.secs:
                 h.pop(0)
             self.medians[i] = time_median(h)
+        if any(t < b for b in self.bad_until):
+            ignoring = True
         ok = [i for i, m in enumerate(self.medians) if m is not None and t >= self.bad_until[i]]
         if not ok:  # every sensor quarantined: fall back to whatever is left
             ok = [i for i, m in enumerate(self.medians) if m is not None]
@@ -240,12 +251,19 @@ class SensorFilter:
         allv = [m for m in self.medians if m is not None]
         if any(t < b + c["glitchEpisodeSeconds"] for b in self.bad_until):
             self.last_glitch = t
+        live = self.live_lux(t, now)
+        if live is not None:
+            if live[1]:
+                ignoring = True
+            self.live = live[0]
+        self.ignoring = ignoring
         if len(allv) >= 2 and best is not None:
             lo = min(allv)
             if (best > c["jumpHugeLux"] and lo < c["jumpDarkLux"]
                     and (best + 1) / (lo + 1) > c["disagreeRatio"]):
                 notes.append(f"sensors disagree ({best:.0f} vs {lo:.1f} lx), using the lower")
                 best = lo
+                self.ignoring = True
         # 2.8.1: during a glitch episode (a sensor went impossible in the last
         # glitchEpisodeSeconds) a dark -> sunlight jump is not believed at all
         if (best is not None and self.last_glitch == t
@@ -253,6 +271,7 @@ class SensorFilter:
                 and best > c["jumpHugeLux"]):
             notes.append(f"glitch episode, ignoring {best:.0f} lx")
             best = self.last_out
+            self.ignoring = True
         if best is not None:
             self.last_out = best
         # repeat-free: a standing condition is noted once, when it starts
@@ -261,6 +280,26 @@ class SensorFilter:
         self.standing = {n.split(" (")[0] for n in cond}
         self.note = "; ".join(new)
         return best
+
+    def live_lux(self, t, now):
+        """(lux, replaced) from this sample alone, for the popup: the same
+        per-sensor rules (range, quarantine, 0 lx drop-outs, cross-sensor
+        disagreement, glitch episode) but no median, so it follows the room
+        at once. None when no sensor gave a usable reading this sample."""
+        c = self.c
+        ok = [v for i, v in enumerate(now) if v is not None and t >= self.bad_until[i]]
+        if not ok:
+            return None
+        best, replaced = max(ok), False
+        allv = [v for v in now if v is not None]
+        if len(allv) >= 2:
+            lo = min(allv)
+            if best > c["jumpHugeLux"] and lo < c["jumpDarkLux"] and (best + 1) / (lo + 1) > c["disagreeRatio"]:
+                best, replaced = lo, True
+        if (self.last_glitch == t and self.live is not None and self.live < c["jumpDarkLux"]
+                and best > c["jumpHugeLux"]):
+            best, replaced = self.live, True
+        return best, replaced
 
     def clear(self):
         for h in self.hist:
@@ -292,6 +331,7 @@ class Controller:
         self.kbd_dark = None      # (since, level) while waiting to turn the light on
         self.staged_to = None     # lux a big drop is heading for while only its part-way dim is applied
         self.wake_until = -1.0    # follow the sensor at once until then (resume / lid open)
+        self.preview_until = -1.0  # 2.12.0: a min/max change is followed at once until then
         self.events = []
 
     @property
@@ -466,7 +506,12 @@ class Controller:
         if self.ramp is None:
             if abs(want - cur_pct) < 1.0:
                 return None
-            dur = self.c["wakeFadeSeconds"] if self.waking(t) else self.ramp_seconds(cur_pct, want)
+            if t < self.preview_until:
+                dur = self.c["previewFadeSeconds"]
+            elif self.waking(t):
+                dur = self.c["wakeFadeSeconds"]
+            else:
+                dur = self.ramp_seconds(cur_pct, want)
             self.ramp = (t, cur_pct, want, dur)
             self.ev(t, f"fade {cur_pct:.0f}% -> {want:.0f}% over {dur:.1f}s")
         t0, a, b, dur = self.ramp
@@ -601,6 +646,13 @@ def fullscreen_video():
     return cached("fsv", 3, lambda: fullscreen() and media_playing())
 
 
+def popup_open():
+    try:
+        return time.time() - os.path.getmtime(WATCH_FLAG) < 2.5
+    except OSError:
+        return False
+
+
 def write_state(d):
     tmp = STATE + ".tmp"
     with open(tmp, "w") as f:
@@ -678,12 +730,14 @@ def run():
     last_wall, last_mono = time.time(), time.monotonic()
     reason = ""
     while True:
+        t = time.monotonic()
         m = os.path.getmtime(CONF) if os.path.exists(CONF) else None
         if m != conf_mtime:
-            c, conf_mtime = load_conf(), m
+            old, (c, conf_mtime) = c, (load_conf(), m)
+            if (old["min"], old["max"]) != (c["min"], c["max"]):
+                ctl.preview_until = t + c["previewSeconds"]  # 2.12.0: slider drag, show it live
             ctl.c = c
             filt.c = c
-        t = time.monotonic()
         # resume detection: wall clock jumped further than the monotonic one
         wall = time.time()
         if (wall - last_wall) - (t - last_mono) > 20:
@@ -712,6 +766,7 @@ def run():
         ctl.events.clear()
 
         reason = hold_reason(c["enabled"], closed, os.path.exists(HOLD_FLAG), screen_off, ctl.stable is not None)
+        video_hold = False
 
         cur = bl.get()
         busy = False
@@ -723,7 +778,10 @@ def run():
         if reason == "auto":
             if last_set is not None and abs(cur - last_set) > bl.max * 0.015:
                 ctl.manual(t, cur / bl.max * 100, datetime.date.today().isoformat())
-            pct = ctl.step(t, cur / bl.max * 100, no_dim=fullscreen_video())
+            no_dim = fullscreen_video()
+            tg = ctl.target()
+            video_hold = bool(no_dim and tg is not None and tg < cur / bl.max * 100 - 1)
+            pct = ctl.step(t, cur / bl.max * 100, no_dim=no_dim)
             if pct is not None:
                 raw = max(1, round(pct / 100 * bl.max))
                 if raw != cur:
@@ -770,9 +828,15 @@ def run():
             "screen": round(bl.get() / bl.max * 100),
             "target": None if ctl.target() is None else round(ctl.target()),
             "offset": round(ctl.offset), "mode": reason,
+            # 2.12.0: for the popup's status line and live lux
+            "luxNow": None if filt.live is None else round(filt.live, 1),
+            "fadeTo": None if ctl.ramp is None else round(ctl.ramp[2]),
+            "glitch": filt.ignoring, "videoHold": video_hold, "waking": ctl.waking(t),
+            "dark": ctl.stable is not None and ctl.stable < c["kbdOnBelow"],
             **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
         })
-        time.sleep(1 / 60 if busy else 0.5)  # 2.9.0: 60 Hz while fading (was 10 Hz)
+        # 2.9.0: 60 Hz while fading (was 10 Hz); 2.12.0: 10 Hz while the popup is open
+        time.sleep(1 / 60 if busy else 0.1 if popup_open() else 0.5)
 
 
 def describe_sensors():

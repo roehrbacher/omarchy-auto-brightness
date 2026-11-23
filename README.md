@@ -42,15 +42,25 @@ Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f"
     ./uninstall.sh
 
 Then add `{ "id": "timon.auto-brightness" }` to your bar. Right-click: on/off.
-Click: a popup laid out like Omarchy's Bluetooth popup. The header has the
-on/off switch and what the service is doing. **Screen** has the min and max
-sliders and the current brightness. **Keyboard light (manual)** (only on
-laptops with a keyboard backlight) has Off, 1 and 2 buttons that set the light
-now and show its current level, and the "Auto in the dark" switch. A manual
-level works like a key press: auto changes it again only when the room gets
-dark or bright enough for another level, the screen comes back on, the lid
-opens or the laptop wakes. While open, the popup reads the daemon's state file
-every 0.25 s (changes show within about 0.25 s); closed, every 10 s.
+Click: a popup laid out like Omarchy's Bluetooth popup (same 380 px width).
+- **Header:** the on/off switch and a status line. In normal operation it
+  cycles every 2.8 s like the stock Bluetooth and Tailscale popups: the live
+  lux, the screen level or your held offset, the keyboard light when it is on,
+  and "Reading the room". Special states show one fixed line instead:
+  dimming or brightening to N %, holding for video, ignoring a sensor glitch,
+  awake and matching the room, held by walk-away, paused (screen off, lid
+  closed), waiting for the sensor, turned off, service not running.
+- **Screen:** min and max sliders. The value and the screen follow the drag
+  live (the daemon follows a min/max change with 0.15 s fades for 2 s).
+- **Keyboard light** (only with a keyboard backlight): one switch, whether
+  auto also drives the keyboard light. The hardware key keeps working;
+  auto keeps your level until the room changes enough for another level.
+
+The lux in the popup is the live reading (`luxNow`: this sample, with the
+glitch rules but without the 4 s median). The screen still follows the
+smoothed value (`lux`). While the popup is open it re-reads the state file
+on every change and touches `$XDG_RUNTIME_DIR/omarchy-auto-brightness.watch`,
+so the daemon samples at 10 Hz instead of 2 Hz; closed, it reads the file every 10 s.
 
 CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off|kbd-level 0`.
 Settings: `~/.config/omarchy/auto-brightness.json`. Besides `enabled`, `min`,

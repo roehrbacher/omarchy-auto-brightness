@@ -14,87 +14,166 @@ Panel {
   ipcTarget: "timon.auto-brightness"
 
   readonly property string tool: Quickshell.env("HOME") + "/.local/bin/omarchy-auto-brightness"
-  // 2.11.0: the daemon rewrites this file on every loop pass (twice a
-  // second, 60 times while fading). Reading it directly instead of spawning
-  // `omarchy-auto-brightness status` every 1.5 s gets changes on screen
-  // within ~0.25 s while the popup is open.
-  readonly property string stateFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omarchy-auto-brightness.json"
+  readonly property string runDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
+  // The daemon rewrites the state file on every pass. While the popup is
+  // open it is re-read on each change (inotify), and the popup touches the
+  // watch file every second so the daemon samples at 10 Hz instead of 2 Hz.
+  readonly property string stateFile: runDir + "/omarchy-auto-brightness.json"
+  readonly property string watchFile: runDir + "/omarchy-auto-brightness.watch"
   property var st: ({ enabled: false, min: 8, max: 100, keyboard: true, mode: "not running" })
-  property bool dragging: false
-  // Settings and the keyboard level the last action wrote win over the state
-  // file until the daemon has written its next pass (at most 0.5 s later).
-  property var pending: ({})
-  property real pendingUntil: 0
+  property bool stateMissing: false
+
+  // Settings the user just changed, shown at once. They win over every read
+  // until the state file reports the same value (or 3 s pass with nothing in
+  // flight), so a read never pulls a slider back mid-drag or after release.
+  property var local: ({})
+  property real localUntil: 0
+  property var wanted: ({})
+  property var sent: ({})
+
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.4)
-  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property string fontFamily: Style.font.menuFamily
   readonly property bool hasKeyboard: st.kbdMax !== undefined && st.kbdMax > 0
 
-  function apply(text, fromAction) {
+  function merged(s) {
+    var out = {}
+    for (var k in s) out[k] = s[k]
+    for (var l in local) out[l] = local[l]
+    return out
+  }
+  function apply(text, fromFile) {
     var s
     try { s = JSON.parse(text) } catch (e) { return }
-    if (fromAction) {
-      pending = { enabled: s.enabled, min: s.min, max: s.max, keyboard: s.keyboard }
-      if (s.kbdLevel !== undefined) pending.kbdLevel = s.kbdLevel
-      pendingUntil = Date.now() + 1500
-    } else if (Date.now() < pendingUntil) {
-      for (var k in pending) {
-        if (s[k] !== pending[k]) s[k] = pending[k]
-      }
+    if (fromFile) {
+      var left = {}
+      var keep = Date.now() < localUntil || actionProc.running
+      for (var k in local) if (s[k] !== local[k] && keep) left[k] = local[k]
+      local = left
     }
-    st = s
+    st = merged(s)
   }
-  function run(args) {
+  function setSetting(key, value) {
+    var l = {}
+    for (var k in local) l[k] = local[k]
+    l[key] = value
+    local = l
+    localUntil = Date.now() + 3000
+    st = merged(st)
+    wanted[key] = value
+    pump()
+  }
+  // One CLI call at a time, always with the newest value: during a drag
+  // that is a write about every 60 ms, as fast as the CLI starts.
+  function pump() {
     if (actionProc.running) return
-    actionProc.command = [tool].concat(args)
-    actionProc.running = true
+    for (var k in wanted) {
+      var v = wanted[k]
+      if (sent[k] === v) continue
+      sent[k] = v
+      if (k === "enabled") actionProc.command = [tool, v ? "on" : "off"]
+      else if (k === "keyboard") actionProc.command = [tool, "set", "keyboard", v ? "on" : "off"]
+      else actionProc.command = [tool, "set", k, String(v)]
+      actionProc.running = true
+      return
+    }
   }
-  function refresh() {
-    if (dragging || actionProc.running) return
-    stateView.reload()
+  function toggleEnabled() { setSetting("enabled", !st.enabled) }
+
+  function luxValue() {
+    var l = st.luxNow !== undefined && st.luxNow !== null ? st.luxNow : st.lux
+    if (l === undefined || l === null) return null
+    return l < 10 ? Math.round(l * 10) / 10 : Math.round(l)
   }
   function luxText() {
-    return st.lux === null || st.lux === undefined ? "" : " · " + Math.round(st.lux) + " lx"
+    var l = luxValue()
+    return l === null ? "" : " · " + l + " lx"
   }
   function statusLine() {
     var m = st.mode || ""
-    var lux = luxText()
-    if (m === "auto" && !st.offset) return "Following the light sensor" + lux + " · screen " + st.screen + "%"
-    if (m === "auto" && st.offset) return "Following the light sensor" + lux + " · your offset " + (st.offset > 0 ? "+" : "") + st.offset + "%"
-    if (m === "walk-away dim") return "Held by the walk-away lock" + lux
-    if (m === "off") return "Off" + lux
     if (m === "not running") return "Service not running"
-    return "Waiting (" + m + ")" + lux
-  }
-  // Short form for the hero's caps meta line.
-  function heroMeta() {
-    var m = st.mode || ""
-    if (m === "auto") return "Following the light" + luxText()
-    if (m === "walk-away dim") return "Held by walk-away" + luxText()
-    if (m === "off") return "Turned off" + luxText()
-    if (m === "not running") return "Service not running"
-    return "Waiting · " + m
+    if (m === "off" || !st.enabled) return "Off" + luxText()
+    if (m === "auto") return "Following the light sensor" + luxText() + " · screen " + st.screen + "%"
+    if (m === "walk-away dim") return "Held by the walk-away lock" + luxText()
+    return "Paused (" + m + ")" + luxText()
   }
 
-  // The state file only exists while the daemon has run this session; when
-  // it is missing, ask the CLI (it also reads the saved settings).
+  // Hero status line. Like stock Bluetooth/Tailscale: one fixed line for a
+  // special state, otherwise a few lines that cycle every 2.8 s with a fade.
+  readonly property var heroLines: {
+    var s = st, m = s.mode || ""
+    if (m === "not running") return ["Service not running"]
+    if (!s.enabled || m === "off") return ["Turned off"]
+    if (m === "lid closed") return ["Paused · lid closed"]
+    if (m === "walk-away dim") return ["Held by walk-away"]
+    if (m === "screen off") return ["Paused · screen off"]
+    if (m === "no reading") return ["Waiting for the sensor"]
+    if (m !== "auto") return ["Paused · " + m]
+    if (s.waking) return ["Awake · matching the room"]
+    if (s.fadeTo !== undefined && s.fadeTo !== null && s.fadeTo !== s.screen)
+      return [(s.fadeTo < s.screen ? "Dimming to " : "Brightening to ") + s.fadeTo + "%"]
+    if (s.videoHold) return ["Holding for video"]
+    if (s.glitch) return ["Ignoring a sensor glitch"]
+    var lines = ["Following the light" + luxText()]
+    lines.push(s.offset ? "Your " + (s.offset > 0 ? "+" : "") + s.offset + "% held" : "Screen at " + s.screen + "%")
+    if (s.keyboard && s.kbdLevel > 0)
+      lines.push((s.dark ? "Dark room · " : "") + "Keyboard light " + (s.kbdMax > 1 ? s.kbdLevel : "on"))
+    lines.push("Reading the room")
+    return lines
+  }
+  property int phraseIndex: 0
+  readonly property bool rotatingPhrases: heroLines.length > 1
+  readonly property string heroMeta: heroLines[phraseIndex % heroLines.length]
+  Timer {
+    id: phraseTimer
+    interval: 2800
+    running: root.opened && root.rotatingPhrases
+    repeat: true
+    onTriggered: phraseSwap.restart()
+  }
+  SequentialAnimation {
+    id: phraseSwap
+    PropertyAnimation { target: hero; property: "metaOpacity"; to: 0.0; duration: Style.duration(180); easing.type: Easing.OutQuad }
+    ScriptAction { script: root.phraseIndex = (root.phraseIndex + 1) % Math.max(1, root.heroLines.length) }
+    PropertyAnimation { target: hero; property: "metaOpacity"; to: 1.0; duration: Style.duration(260); easing.type: Easing.InQuad }
+  }
+  onRotatingPhrasesChanged: if (!rotatingPhrases) { phraseSwap.stop(); phraseIndex = 0; hero.metaOpacity = 1.0 }
+
   FileView {
     id: stateView
     path: root.stateFile
     blockLoading: true
     printErrors: false
-    onLoaded: root.apply(text(), false)
-    onLoadFailed: if (!statusProc.running) statusProc.running = true
+    watchChanges: root.opened
+    onFileChanged: reload()
+    onLoaded: { root.stateMissing = false; root.apply(text(), true) }
+    onLoadFailed: root.stateMissing = true
   }
+  // Only when the state file is missing (service never ran this session):
+  // the CLI also reads the saved settings. Once on load and on each open.
   Process { id: statusProc; command: [root.tool, "status"]; stdout: StdioCollector { onStreamFinished: root.apply(text, false) } }
-  Process { id: actionProc; stdout: StdioCollector { onStreamFinished: root.apply(text, true) } }
-  Timer {
-    // Open: a small file read every 0.25 s. Closed: every 10 s for the bar
-    // icon and its tooltip, no process spawned.
-    interval: root.opened ? 250 : 10000; running: true; repeat: true; triggeredOnStart: true
-    onTriggered: root.refresh()
+  Process {
+    id: actionProc
+    stdout: StdioCollector { onStreamFinished: root.apply(text, false) }
+    onExited: root.pump()
   }
-  onOpenedChanged: if (opened) refresh()
+  FileView { id: watchView; path: root.watchFile; printErrors: false }
+  Timer {
+    interval: 1000; running: root.opened; repeat: true; triggeredOnStart: true
+    onTriggered: watchView.setText(String(Date.now()))
+  }
+  Timer {
+    // Closed: the bar tooltip's state, a file read every 10 s. Open: retry
+    // the file once a second only while it is missing.
+    interval: root.opened ? 1000 : 10000; running: true; repeat: true
+    onTriggered: if (!root.opened || root.stateMissing) stateView.reload()
+  }
+  function refreshOnOpen() {
+    stateView.reload()
+    if (stateMissing && !statusProc.running) statusProc.running = true
+  }
+  onOpenedChanged: if (opened) refreshOnOpen()
+  Component.onCompleted: if (stateMissing) statusProc.running = true
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -106,7 +185,7 @@ Panel {
     tooltipText: "Auto brightness " + (root.st.enabled ? "on" : "off") + "\n" + root.statusLine() + "\nRight-click: on/off"
     foreground: root.st.enabled ? (root.bar ? root.bar.barForeground : Color.foreground) : root.dim
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.run([root.st.enabled ? "off" : "on"])
+      if (b === Qt.RightButton) root.toggleEnabled()
       else root.toggle()
     }
   }
@@ -125,7 +204,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
-      onActivateRequested: root.run([root.st.enabled ? "off" : "on"])
+      onActivateRequested: root.toggleEnabled()
 
       Column {
         id: column
@@ -137,7 +216,7 @@ Panel {
           id: hero
           objectName: "abHero"
           title: "Auto Brightness"
-          meta: root.heroMeta()
+          meta: root.heroMeta
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconOpacity: root.st.enabled ? 1.0 : 0.5
@@ -156,9 +235,8 @@ Panel {
               id: powerSwitch
               objectName: "abPower"
               checked: !!root.st.enabled
-              busy: actionProc.running
               foreground: root.foreground
-              onToggled: root.run([root.st.enabled ? "off" : "on"])
+              onToggled: root.toggleEnabled()
 
               PanelToolTip {
                 visible: powerSwitch.containsMouse
@@ -191,12 +269,13 @@ Panel {
             }
             Text {
               id: screenNow
+              objectName: "abScreenNow"
               textFormat: Text.PlainText
               visible: root.st.screen !== undefined
               text: "NOW " + root.st.screen + "%"
               color: root.dim
               font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+              font.pixelSize: Style.font.bodySmall
               font.bold: true
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -210,14 +289,14 @@ Panel {
               width: parent.width
               implicitHeight: minLabel.implicitHeight
               Text { id: minLabel; objectName: "abMinLabel"; textFormat: Text.PlainText; text: "Minimum"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body }
-              Text { anchors.right: parent.right; textFormat: Text.PlainText; text: root.st.min + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+              Text { objectName: "abMinValue"; anchors.right: parent.right; textFormat: Text.PlainText; text: root.st.min + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body }
             }
             PanelSlider {
               objectName: "abMinSlider"
               width: parent.width; bar: root.bar
               minimum: 1; maximum: 100; step: 1; integer: true; value: root.st.min
-              onDraggingChanged: root.dragging = dragging
-              onReleased: function(v) { root.run(["set", "min", String(Math.min(v, root.st.max))]) }
+              onMoved: function(v) { root.setSetting("min", Math.min(v, root.st.max)) }
+              onReleased: function(v) { root.setSetting("min", Math.min(v, root.st.max)) }
             }
           }
 
@@ -228,29 +307,21 @@ Panel {
               width: parent.width
               implicitHeight: maxLabel.implicitHeight
               Text { id: maxLabel; textFormat: Text.PlainText; text: "Maximum"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body }
-              Text { anchors.right: parent.right; textFormat: Text.PlainText; text: root.st.max + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+              Text { objectName: "abMaxValue"; anchors.right: parent.right; textFormat: Text.PlainText; text: root.st.max + "%"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body }
             }
             PanelSlider {
+              objectName: "abMaxSlider"
               width: parent.width; bar: root.bar
               minimum: 1; maximum: 100; step: 1; integer: true; value: root.st.max
-              onDraggingChanged: root.dragging = dragging
-              onReleased: function(v) { root.run(["set", "max", String(Math.max(v, root.st.min))]) }
+              onMoved: function(v) { root.setSetting("max", Math.max(v, root.st.min)) }
+              onReleased: function(v) { root.setSetting("max", Math.max(v, root.st.min)) }
             }
-          }
-
-          Text {
-            objectName: "abOffset"
-            visible: root.st.mode === "auto" && !!root.st.offset
-            width: parent.width; wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: "Your brightness keys moved the curve " + (root.st.offset > 0 ? "+" : "") + root.st.offset + "%."
-            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
           }
         }
 
         PanelSeparator { visible: root.hasKeyboard; foreground: root.foreground }
 
-        // ---------- Keyboard light ----------
+        // ---------- Keyboard light: does auto drive it ----------
         Column {
           objectName: "abKeyboard"
           visible: root.hasKeyboard
@@ -259,33 +330,9 @@ Panel {
 
           PanelSectionHeader {
             objectName: "abKbdHeader"
-            text: "KEYBOARD LIGHT (MANUAL)"
+            text: "KEYBOARD LIGHT"
             foreground: root.foreground
             fontFamily: root.fontFamily
-          }
-
-          ButtonGroup {
-            id: levels
-            objectName: "abKbdLevels"
-            focusable: false
-            options: root.st.kbdMax >= 2 ? [{ value: "0", label: "Off" }, { value: "1", label: "1" }, { value: "2", label: "2" }]
-                                         : [{ value: "0", label: "Off" }, { value: "1", label: "On" }]
-            value: root.st.kbdLevel === undefined ? "" : String(root.st.kbdLevel)
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onChanged: function(v) { root.run(["kbd-level", v]) }
-          }
-
-          Text {
-            objectName: "abKbdHelp"
-            width: parent.width; wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: !root.st.enabled
-              ? "Sets the light now. Auto Brightness is off, so only you and the keyboard's own idle timeout change it."
-              : root.st.keyboard
-                ? "Sets the light now. Auto still changes it when the room gets dark or bright enough for another level, the screen comes back on, the lid opens or the laptop wakes."
-                : "Sets the light now. With Auto in the dark off, only you and the keyboard's own idle timeout change it."
-            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
           }
 
           Item {
@@ -297,7 +344,7 @@ Panel {
               textFormat: Text.PlainText
               anchors.left: parent.left; anchors.right: kbdSw.left; anchors.rightMargin: Style.space(12)
               anchors.verticalCenter: parent.verticalCenter
-              text: "Auto in the dark"
+              text: "Follow the room light"
               elide: Text.ElideRight
               color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body
             }
@@ -305,9 +352,20 @@ Panel {
               id: kbdSw
               objectName: "abKbdAuto"
               anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-              checked: !!root.st.keyboard; busy: actionProc.running; foreground: root.foreground
-              onToggled: root.run(["set", "keyboard", root.st.keyboard ? "off" : "on"])
+              checked: !!root.st.keyboard; foreground: root.foreground
+              onToggled: root.setSetting("keyboard", !root.st.keyboard)
             }
+          }
+
+          Text {
+            objectName: "abKbdHelp"
+            width: parent.width; wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+            text: "On: the light comes on about 15 s after the room goes dark" + (root.st.kbdMax > 1 ? " (level 2 when very dark)" : "")
+              + ", goes off when it gets bright, and is set to match the room when the screen comes back on, the lid opens or the laptop wakes."
+              + " Your keyboard key still works; auto keeps your level until the room changes enough for another level."
+              + " Off: auto leaves the keyboard light alone."
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
           }
         }
       }
