@@ -8,7 +8,7 @@ if not shutil.which("node"):
     print("node not installed: skipped"); sys.exit(0)
 base = {"enabled": True, "min": 8, "max": 100, "keyboard": True, "lux": 120, "luxNow": 126.4, "screen": 64,
         "target": 64, "offset": 0, "mode": "auto", "fadeTo": None, "videoHold": False, "waking": False,
-        "dark": False, "kbdLevel": 0, "kbdMax": 2}
+        "dark": False, "lowBattery": False, "kbdLevel": 0, "kbdMax": 2}
 dark = {"lux": 0.5, "luxNow": 0.4, "dark": True, "screen": 8, "target": 8}
 cases = [  # (state, local hour, expected lines)
     ("following the light", {}, 14, ["Following the light · 126 lx", "Screen at 64%", "Reading the room"]),
@@ -18,6 +18,7 @@ cases = [  # (state, local hour, expected lines)
     ("dark room, keyboard light 2, evening", {**dark, "kbdLevel": 2}, 20, ["Following the light · 0.4 lx", "Screen at 8%", "Dark room · Keyboard backlight 2", "Pitch black in here"]),
     ("dark room at night", {**dark, "kbdLevel": 2}, 23, ["Following the light · 0.4 lx", "Screen at 8%", "Dark room · Keyboard backlight 2", "Pitch black · night owl hours"]),
     ("dark, keyboard follow off", {**dark, "lux": 2.5, "luxNow": 2.5, "keyboard": False}, 20, ["Following the light · 2.5 lx", "Screen at 8%", "Dark in here · keyboard is yours", "Reading the room"]),
+    ("dark room on low battery", {**dark, "kbdLevel": 1, "lowBattery": True}, 20, ["Following the light · 0.4 lx", "Screen at 8%", "Low battery · Keyboard backlight 1", "Pitch black in here"]),
     ("key pressed in a lit room", {"kbdLevel": 1}, 14, ["Following the light · 126 lx", "Screen at 64%", "Keyboard backlight 1", "Reading the room"]),
     ("direct sunlight", {"lux": 31000, "luxNow": 32000, "screen": 100, "target": 100}, 13, ["Following the light · 32000 lx", "Screen at 100%", "Direct sunlight · shades on"]),
     ("min = max = 100", {"min": 100, "max": 100, "screen": 100, "target": 100}, 14, ["Always full blast"]),

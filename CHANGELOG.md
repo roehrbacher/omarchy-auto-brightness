@@ -2,6 +2,16 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.15.0
+
+Keyboard backlight capped at level 1 on low battery.
+
+- On battery (status Discharging) below `kbdLowBatteryPercent` (default 15, 0 = off), auto sets the keyboard backlight to level 1 at most and lowers its own level 2 to 1. Only what auto sets is capped: a key press to 2 still sticks, as before. The charger lifts the cap. The screen curve is unchanged.
+- The battery comes from `/sys/class/power_supply` (the laptop's own battery; peripheral batteries with scope Device are ignored), read at most every 10 s.
+- Why 15 %: Omarchy has no percentage-based battery saver. `omarchy-powerprofiles-set` switches the profile when the charger is plugged in or out, and the shell's battery service only warns at 10 %.
+- State file: `lowBattery` (the cap is active). Status line: "Low battery · Keyboard backlight N" replaces "Dark room · Keyboard backlight N" while it applies.
+- Test: `tests/test_kbd_low_battery.py`.
+
 ## 2.14.0
 
 Fewer status lines, keyboard backlight as one row.

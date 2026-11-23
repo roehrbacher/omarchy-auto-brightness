@@ -27,6 +27,7 @@ Changes per version: [CHANGELOG.md](CHANGELOG.md).
   your own key presses stick. `kbdLevel2Below: 0` disables level 2. The inactivity timeout is the Dell firmware's own
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.
+- **Low battery:** on battery below 15 % (`kbdLowBatteryPercent`, 0 = off) auto sets the keyboard backlight to level 1 at most, and lowers its own level 2 to 1. A key press to 2 still sticks; the charger lifts the cap. The battery is read from `/sys/class/power_supply` every 10 s (peripheral batteries are ignored). 15 % because Omarchy has no percentage-based power saver: it switches power profiles on plugging in or unplugging, and only warns at 10 %.
 - Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or the walk-away lock has dimmed it.
 - Writes through logind's SetBrightness (D-Bus, `brightnessctl` as fallback), so the user service needs no root.
 - Every decision (raw and filtered lux, target, current, mode, trigger) goes to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
@@ -71,7 +72,7 @@ CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboa
 Settings: `~/.config/omarchy/auto-brightness.json`. Besides `enabled`, `min`,
 `max` and `keyboard` it takes any key of `DEFAULTS` at the top of
 `bin/omarchy-auto-brightness`, for example `gamma`, `fullLux`, `kbdOnBelow`,
-`kbdOffAbove`, `kbdLevel2Below`, `kbdLevel2Exit`, `kbdOnSeconds`, `dimHoldSeconds`,
+`kbdOffAbove`, `kbdLevel2Below`, `kbdLowBatteryPercent`, `kbdLevel2Exit`, `kbdOnSeconds`, `dimHoldSeconds`,
 `dimQuickSeconds`, `brightenSeconds`, `luxDeadband`, `settleSeconds` and
 `offsetResetRatio`. `"appleRamps": false` goes back to fixed fades
 (`brightenSeconds` up, `dimSeconds` down).

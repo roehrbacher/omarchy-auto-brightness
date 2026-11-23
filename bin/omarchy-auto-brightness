@@ -47,6 +47,7 @@ DEFAULTS = {
     "kbdLevel2Below": 1,   # lux: level 2 below this (very dark; 0 = never)
     "kbdLevel2Exit": 2,    # lux: and back to level 1 only above this (hysteresis)
     "kbdOffAbove": 12,     # lux: off above this
+    "kbdLowBatteryPercent": 15,  # 2.15.0: on battery below this %, auto sets the keyboard to level 1 at most (0 = off)
     "kbdOnSeconds": 3.0,   # darker keyboard level only after the darkness held this long; big drops
                            # already wait dimHoldSeconds, so a 250 -> 0 lx tunnel lights it after ~15 s
     "dimHoldSeconds": 8.0,   # a drop to under half the light must hold this long before the screen dims fully
@@ -86,7 +87,7 @@ DEFAULTS = {
     "previewFadeSeconds": 0.15,  # ...with fades this short (slider drag in the popup)
 }
 MAX_LUX = 60000
-VERSION = "2.14.0"
+VERSION = "2.15.0"
 
 
 def load_conf():
@@ -582,6 +583,31 @@ class Dev:
             subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))], check=False)
 
 
+POWER_SUPPLY = "/sys/class/power_supply"
+
+
+def battery():
+    """(percent, discharging) of the laptop's own battery, or None. Skips
+    peripheral batteries (mouse, headset: scope "Device")."""
+    for d in sorted(glob.glob(POWER_SUPPLY + "/*")):
+        if read(d + "/type") != "Battery" or read(d + "/scope", "System") == "Device":
+            continue
+        try:
+            return int(read(d + "/capacity")), read(d + "/status") == "Discharging"
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def low_battery(c):
+    """2.15.0: discharging and under kbdLowBatteryPercent (read every 10 s)."""
+    limit = c["kbdLowBatteryPercent"]
+    if not limit:
+        return False
+    b = cached("battery", 10, battery)
+    return bool(b) and b[1] and b[0] < limit
+
+
 def lid_closed():
     return any("closed" in (read(p) or "") for p in glob.glob("/proc/acpi/button/lid/*/state"))
 
@@ -757,6 +783,7 @@ def run():
 
         reason = hold_reason(c["enabled"], closed, os.path.exists(HOLD_FLAG), screen_off, ctl.stable is not None)
         video_hold = False
+        low_bat = False
 
         cur = bl.get()
         busy = False
@@ -780,12 +807,16 @@ def run():
             busy = ctl.ramp is not None
             last_set = cur
             if kbd and c["keyboard"]:
-                want = ctl.kbd_level(kbd.max, t)
+                # 2.15.0: low battery caps what auto sets at level 1; a key
+                # press to 2 still sticks (only transitions are written)
+                low_bat = low_battery(c)
+                want = ctl.kbd_level(min(kbd.max, 1) if low_bat else kbd.max, t)
                 # only act on transitions, so the firmware idle-off and the
                 # user's own key presses are never overridden
                 if want is not None and want != ctl.kbd_want:
-                    log(f"lux={ctl.stable:.1f} keyboard -> {want}")
-                    msgs.append(f"keyboard -> {want}")
+                    why = " (low battery cap)" if low_bat and kbd.max > 1 else ""
+                    log(f"lux={ctl.stable:.1f} keyboard -> {want}{why}")
+                    msgs.append(f"keyboard -> {want}{why}")
                     kbd.set(want)
                     ctl.kbd_want = want
             for et, msg in ctl.events:
@@ -823,6 +854,7 @@ def run():
             "fadeTo": None if ctl.ramp is None else round(ctl.ramp[2]),
             "videoHold": video_hold, "waking": ctl.waking(t),
             "dark": ctl.stable is not None and ctl.stable < c["kbdOnBelow"],
+            "lowBattery": low_bat,  # 2.15.0: the keyboard cap at level 1 is active
             **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
         })
         # 2.9.0: 60 Hz while fading (was 10 Hz); 2.12.0: 10 Hz while the popup is open

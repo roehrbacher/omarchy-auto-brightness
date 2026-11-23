@@ -39,7 +39,7 @@ function lines(s, hour) {
   else if (s.offset) out.push("Your " + (s.offset > 0 ? "+" : "") + s.offset + "% held")
   else out.push("Screen at " + s.screen + "%")
   if (s.keyboard && s.kbdLevel > 0)
-    out.push((s.dark ? "Dark room · " : "") + "Keyboard backlight " + (s.kbdMax > 1 ? s.kbdLevel : "on"))
+    out.push((s.lowBattery ? "Low battery · " : s.dark ? "Dark room · " : "") + "Keyboard backlight " + (s.kbdMax > 1 ? s.kbdLevel : "on"))
   else if (!s.keyboard && s.dark && s.kbdMax > 0)
     out.push("Dark in here · keyboard is yours")
   if (lux !== null && lux !== undefined && lux >= 20000) out.push("Direct sunlight · shades on")
