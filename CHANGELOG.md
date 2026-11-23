@@ -2,6 +2,16 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.13.0
+
+Status line round 3, keyboard section without help text.
+
+- Sensor glitch handling no longer shows in the popup ("Ignoring a sensor glitch" is gone, and the state file no longer carries `glitch`). It is still in the decision log.
+- The keyboard section is just its title and the "Follow the room light" switch.
+- New status lines for edge cases. Fixed (they change what the screen does): "Always full blast" (min = max = 100 %), "Max 1% · vampire mode" (min = max = 1 %), "Locked at N% · sensor on a break" (min = max otherwise, or min > max from a hand-edited file; not while a brightness-key offset moves it), "Woke up in the dark · going easy" (resume or lid open in a dark room). In the rotation: "Your keys maxed it out" / "Your keys dimmed it all the way" (offset pinned the screen at 100 % / 1 %), "Dark in here · keyboard is yours" (dark room, keyboard follow off), and one fun fact: "Direct sunlight · shades on" (20000 lx or more), "Pitch black · night owl hours" / "Pitch black in here" (under 1 lx, 22:00 to 06:00 or otherwise), "The room can't decide" (the settled lux moved 4+ times in a minute, new state field `restless`), else "Reading the room". At most four lines cycle.
+- The lines live in `HeroLines.js` (installed with the plugin). `tests/test_hero_lines.py` prints the line for every state (needs node).
+- Not added: battery vs charger, because the daemon does not read the power supply and this round adds no new data sources.
+
 ## 2.12.0
 
 Popup round 2: a live status line, a simpler keyboard section, live sliders and live lux.

@@ -43,18 +43,18 @@ Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f"
 
 Then add `{ "id": "timon.auto-brightness" }` to your bar. Right-click: on/off.
 Click: a popup laid out like Omarchy's Bluetooth popup (same 380 px width).
-- **Header:** the on/off switch and a status line. In normal operation it
-  cycles every 2.8 s like the stock Bluetooth and Tailscale popups: the live
-  lux, the screen level or your held offset, the keyboard light when it is on,
-  and "Reading the room". Special states show one fixed line instead:
-  dimming or brightening to N %, holding for video, ignoring a sensor glitch,
-  awake and matching the room, held by walk-away, paused (screen off, lid
-  closed), waiting for the sensor, turned off, service not running.
+- **Header:** the on/off switch and a status line (`HeroLines.js`). A state
+  that changes what the screen does shows one fixed line (turned off, paused,
+  dimming/brightening to N %, holding for video, min = max "Always full
+  blast" / "Locked at N %"). Otherwise up to four lines cycle every 2.8 s like
+  the stock Bluetooth and Tailscale popups: the live lux, the screen level or
+  your key offset, the keyboard light, and one fun fact about the room
+  (sunlight, pitch black, a room that can't decide). Sensor glitch handling
+  never shows; it stays in the decision log. Full table: `python3 tests/test_hero_lines.py`.
 - **Screen:** min and max sliders. The value and the screen follow the drag
   live (the daemon follows a min/max change with 0.15 s fades for 2 s).
 - **Keyboard light** (only with a keyboard backlight): one switch, whether
-  auto also drives the keyboard light. The hardware key keeps working;
-  auto keeps your level until the room changes enough for another level.
+  auto also drives the keyboard light. The hardware key keeps working.
 
 The lux in the popup is the live reading (`luxNow`: this sample, with the
 glitch rules but without the 4 s median). The screen still follows the

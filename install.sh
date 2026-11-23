@@ -8,7 +8,7 @@ install -Dm755 "$ROOT/bin/omarchy-auto-brightness" "$HOME/.local/bin/omarchy-aut
 install -Dm644 "$ROOT/systemd/omarchy-auto-brightness.service" "$HOME/.config/systemd/user/omarchy-auto-brightness.service"
 P="$HOME/.config/omarchy/plugins/timon.auto-brightness"
 if [[ $(readlink -f "$ROOT") != $(readlink -f "$P" 2>/dev/null || true) ]]; then
-  mkdir -p "$P" && cp "$ROOT"/{manifest.json,Panel.qml,LICENSE,README.md,CHANGELOG.md} "$P/"
+  mkdir -p "$P" && cp "$ROOT"/{manifest.json,Panel.qml,HeroLines.js,LICENSE,README.md,CHANGELOG.md} "$P/"
 fi
 command -v brightnessctl >/dev/null || echo "brightnessctl is missing (pacman -S brightnessctl)" >&2
 systemctl --user daemon-reload

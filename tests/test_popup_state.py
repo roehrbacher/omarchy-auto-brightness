@@ -2,7 +2,7 @@
 loop (fake sysfs in a temp dir, stubbed D-Bus/hyprctl, fake clock):
 - luxNow follows the room on the next sample while lux (what the screen
   follows) still waits for the median and settle time; glitch values never
-  reach luxNow, and "glitch" says one was dropped
+  reach luxNow (2.13.0: and are not reported to the popup at all)
 - with the popup open (watch file fresh) the daemon samples at 10 Hz
 - a min change is followed at once (short preview fade, "fadeTo" set),
   while a room change afterwards still fades slowly"""
@@ -48,7 +48,8 @@ events = [(20, lambda: room(40)),
           (90, lambda: popup.update(open=True)),
           (100, lambda: room(0)),
           (140, lambda: cli("set", "min", "40")),
-          (150, lambda: room(300))]
+          (150, lambda: room(300)),
+          (172, lambda: room(20)), (184, lambda: room(300)), (196, lambda: room(20))]  # lights on/off/on
 def sleep(dt):
     before = clock["t"]; clock["t"] += dt
     sleeps.append((round(before - 1000, 3), dt))
@@ -58,7 +59,7 @@ def sleep(dt):
     if popup["open"]:
         open(ab.WATCH_FLAG, "w").write("1")
         os.utime(ab.WATCH_FLAG, (clock["t"] + 1e9, clock["t"] + 1e9))
-    if clock["t"] > 1170: raise KeyboardInterrupt
+    if clock["t"] > 1215: raise KeyboardInterrupt
 ab.time.sleep = sleep
 ab.time.monotonic = lambda: clock["t"]
 ab.time.time = lambda: clock["t"] + 1e9
@@ -77,8 +78,13 @@ print(f"room 200 -> 40 lx: luxNow 40 after {first[0] - 20:.2f} s, settled lux mo
 # glitches: never shown as luxNow, flagged while dropped
 g1 = at(40, 41); g2 = at(80, 81)
 assert all(d["luxNow"] == 40 for t, d in g1 + g2), [d["luxNow"] for t, d in g1 + g2]
-assert all(d["glitch"] for t, d in g1 + g2) and not at(35, 40)[-1][1]["glitch"]
-print("170063 lx (impossible) and a 43000 lx one-sensor burst: luxNow stays 40, glitch true")
+assert all("glitch" not in d for t, d in states)
+print("170063 lx (impossible) and a 43000 lx one-sensor burst: luxNow stays 40, nothing about it in the state")
+# restless: the settled lux moved 4+ times within a minute (lights on/off/on)
+assert not any(d["restless"] for t, d in at(0, 170))
+first_restless = next(t for t, d in states if d["restless"])
+assert 184 < first_restless < 215, first_restless
+print(f"lights switched 4 times in 46 s: restless from {first_restless:.0f} s, never before")
 # cadence: 2 Hz closed, 10 Hz with the popup open (not fading)
 idle_closed = {dt for t, dt in sleeps if 60 <= t < 79}
 idle_open = {dt for t, dt in sleeps if 125 <= t < 139}
@@ -92,7 +98,7 @@ assert reach - 140 <= 0.5, reach
 assert any(d["fadeTo"] == 40 for t, d in at(140, 141))
 print(f"min 8 -> 40: screen at 40 % after {reach - 140:.2f} s")
 # a room change afterwards is still a normal slow fade
-fading = [t for t, d in at(150, 170) if d["fadeTo"] is not None]
+fading = [t for t, d in at(150, 165) if d["fadeTo"] is not None]
 assert fading and fading[-1] - fading[0] >= 1.4, (fading[:1], fading[-1:])
 print(f"room 0 -> 300 lx afterwards: normal fade of {fading[-1] - fading[0]:.1f} s")
 print("ok")

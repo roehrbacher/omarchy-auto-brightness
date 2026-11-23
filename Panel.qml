@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "HeroLines.js" as HeroLines
 
 // Auto Brightness bar control. The work is done by the user service
 // omarchy-auto-brightness; this shows its state and edits the settings.
@@ -98,29 +99,10 @@ Panel {
     return "Paused (" + m + ")" + luxText()
   }
 
-  // Hero status line. Like stock Bluetooth/Tailscale: one fixed line for a
-  // special state, otherwise a few lines that cycle every 2.8 s with a fade.
-  readonly property var heroLines: {
-    var s = st, m = s.mode || ""
-    if (m === "not running") return ["Service not running"]
-    if (!s.enabled || m === "off") return ["Turned off"]
-    if (m === "lid closed") return ["Paused · lid closed"]
-    if (m === "walk-away dim") return ["Held by walk-away"]
-    if (m === "screen off") return ["Paused · screen off"]
-    if (m === "no reading") return ["Waiting for the sensor"]
-    if (m !== "auto") return ["Paused · " + m]
-    if (s.waking) return ["Awake · matching the room"]
-    if (s.fadeTo !== undefined && s.fadeTo !== null && s.fadeTo !== s.screen)
-      return [(s.fadeTo < s.screen ? "Dimming to " : "Brightening to ") + s.fadeTo + "%"]
-    if (s.videoHold) return ["Holding for video"]
-    if (s.glitch) return ["Ignoring a sensor glitch"]
-    var lines = ["Following the light" + luxText()]
-    lines.push(s.offset ? "Your " + (s.offset > 0 ? "+" : "") + s.offset + "% held" : "Screen at " + s.screen + "%")
-    if (s.keyboard && s.kbdLevel > 0)
-      lines.push((s.dark ? "Dark room · " : "") + "Keyboard light " + (s.kbdMax > 1 ? s.kbdLevel : "on"))
-    lines.push("Reading the room")
-    return lines
-  }
+  // Hero status line, see HeroLines.js. Like stock Bluetooth/Tailscale:
+  // one fixed line for a special state, otherwise lines cycling every 2.8 s.
+  property int clockHour: new Date().getHours()
+  readonly property var heroLines: HeroLines.lines(st, clockHour)
   property int phraseIndex: 0
   readonly property bool rotatingPhrases: heroLines.length > 1
   readonly property string heroMeta: heroLines[phraseIndex % heroLines.length]
@@ -134,7 +116,7 @@ Panel {
   SequentialAnimation {
     id: phraseSwap
     PropertyAnimation { target: hero; property: "metaOpacity"; to: 0.0; duration: Style.duration(180); easing.type: Easing.OutQuad }
-    ScriptAction { script: root.phraseIndex = (root.phraseIndex + 1) % Math.max(1, root.heroLines.length) }
+    ScriptAction { script: { root.clockHour = new Date().getHours(); root.phraseIndex = (root.phraseIndex + 1) % Math.max(1, root.heroLines.length) } }
     PropertyAnimation { target: hero; property: "metaOpacity"; to: 1.0; duration: Style.duration(260); easing.type: Easing.InQuad }
   }
   onRotatingPhrasesChanged: if (!rotatingPhrases) { phraseSwap.stop(); phraseIndex = 0; hero.metaOpacity = 1.0 }
@@ -172,7 +154,7 @@ Panel {
     stateView.reload()
     if (stateMissing && !statusProc.running) statusProc.running = true
   }
-  onOpenedChanged: if (opened) refreshOnOpen()
+  onOpenedChanged: if (opened) { clockHour = new Date().getHours(); refreshOnOpen() }
   Component.onCompleted: if (stateMissing) statusProc.running = true
 
   implicitWidth: button.implicitWidth
@@ -355,17 +337,6 @@ Panel {
               checked: !!root.st.keyboard; foreground: root.foreground
               onToggled: root.setSetting("keyboard", !root.st.keyboard)
             }
-          }
-
-          Text {
-            objectName: "abKbdHelp"
-            width: parent.width; wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: "On: the light comes on about 15 s after the room goes dark" + (root.st.kbdMax > 1 ? " (level 2 when very dark)" : "")
-              + ", goes off when it gets bright, and is set to match the room when the screen comes back on, the lid opens or the laptop wakes."
-              + " Your keyboard key still works; auto keeps your level until the room changes enough for another level."
-              + " Off: auto leaves the keyboard light alone."
-            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
           }
         }
       }

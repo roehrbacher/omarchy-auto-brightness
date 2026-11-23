@@ -86,7 +86,7 @@ DEFAULTS = {
     "previewFadeSeconds": 0.15,  # ...with fades this short (slider drag in the popup)
 }
 MAX_LUX = 60000
-VERSION = "2.12.0"
+VERSION = "2.13.0"
 
 
 def load_conf():
@@ -196,7 +196,6 @@ class SensorFilter:
         self.zero_since = [None] * n  # 2.10.0: start of a run of exact-0 samples per sensor
         self.last_glitch = None       # last sample inside a glitch episode
         self.live = None              # 2.12.0: this sample's lux, glitch rules but no median (popup)
-        self.ignoring = False         # 2.12.0: a glitch rule dropped or replaced a reading this sample
 
     def feed(self, t, samples):
         """samples: raw lux per sensor (None = unreadable). Values outside
@@ -204,7 +203,6 @@ class SensorFilter:
         c, notes = self.c, []
         q = c["glitchQuarantineSeconds"]
         now = [None] * len(samples)
-        ignoring = False
         for i, (h, v) in enumerate(zip(self.hist, samples)):
             if v is not None and not (0 <= v <= MAX_LUX):
                 if t >= self.bad_until[i]:
@@ -224,7 +222,6 @@ class SensorFilter:
                 lit = m is not None and c["zeroDropoutLux"] < m <= c["jumpHugeLux"]
                 if lit and t - self.zero_since[i] < c["zeroTrustSeconds"]:
                     v = None
-                    ignoring = True
                 elif lit:
                     h.clear()  # held long enough: drop the old light samples at once
             elif v is not None:
@@ -235,8 +232,6 @@ class SensorFilter:
             while h and t - h[0][0] > self.secs:
                 h.pop(0)
             self.medians[i] = time_median(h)
-        if any(t < b for b in self.bad_until):
-            ignoring = True
         ok = [i for i, m in enumerate(self.medians) if m is not None and t >= self.bad_until[i]]
         if not ok:  # every sensor quarantined: fall back to whatever is left
             ok = [i for i, m in enumerate(self.medians) if m is not None]
@@ -253,17 +248,13 @@ class SensorFilter:
             self.last_glitch = t
         live = self.live_lux(t, now)
         if live is not None:
-            if live[1]:
-                ignoring = True
-            self.live = live[0]
-        self.ignoring = ignoring
+            self.live = live
         if len(allv) >= 2 and best is not None:
             lo = min(allv)
             if (best > c["jumpHugeLux"] and lo < c["jumpDarkLux"]
                     and (best + 1) / (lo + 1) > c["disagreeRatio"]):
                 notes.append(f"sensors disagree ({best:.0f} vs {lo:.1f} lx), using the lower")
                 best = lo
-                self.ignoring = True
         # 2.8.1: during a glitch episode (a sensor went impossible in the last
         # glitchEpisodeSeconds) a dark -> sunlight jump is not believed at all
         if (best is not None and self.last_glitch == t
@@ -271,7 +262,6 @@ class SensorFilter:
                 and best > c["jumpHugeLux"]):
             notes.append(f"glitch episode, ignoring {best:.0f} lx")
             best = self.last_out
-            self.ignoring = True
         if best is not None:
             self.last_out = best
         # repeat-free: a standing condition is noted once, when it starts
@@ -282,7 +272,7 @@ class SensorFilter:
         return best
 
     def live_lux(self, t, now):
-        """(lux, replaced) from this sample alone, for the popup: the same
+        """Lux from this sample alone, for the popup: the same
         per-sensor rules (range, quarantine, 0 lx drop-outs, cross-sensor
         disagreement, glitch episode) but no median, so it follows the room
         at once. None when no sensor gave a usable reading this sample."""
@@ -290,16 +280,16 @@ class SensorFilter:
         ok = [v for i, v in enumerate(now) if v is not None and t >= self.bad_until[i]]
         if not ok:
             return None
-        best, replaced = max(ok), False
+        best = max(ok)
         allv = [v for v in now if v is not None]
         if len(allv) >= 2:
             lo = min(allv)
             if best > c["jumpHugeLux"] and lo < c["jumpDarkLux"] and (best + 1) / (lo + 1) > c["disagreeRatio"]:
-                best, replaced = lo, True
+                best = lo
         if (self.last_glitch == t and self.live is not None and self.live < c["jumpDarkLux"]
                 and best > c["jumpHugeLux"]):
-            best, replaced = self.live, True
-        return best, replaced
+            best = self.live
+        return best
 
     def clear(self):
         for h in self.hist:
@@ -724,6 +714,8 @@ def run():
     trigger = "start"
     dlog.write(event="start", version=VERSION, sensors=len(sens))
     held = False
+    lux_moves = []           # 2.13.0: when the settled lux last changed (popup: restless room)
+    prev_stable = None
     conf_mtime = None
     last_set = None          # raw we last wrote
     was_closed = False
@@ -757,6 +749,10 @@ def run():
         samples = lux_raw(sens)
         filtered = filt.feed(t, samples)
         ctl.feed_lux(t, filtered)
+        if ctl.stable is not None and prev_stable is not None and ctl.stable != prev_stable:
+            lux_moves.append(t)
+        prev_stable = ctl.stable
+        lux_moves = [m for m in lux_moves if t - m < 60]
         msgs = [msg for _, msg in ctl.events]
         if filt.note:
             log(filt.note)
@@ -831,8 +827,9 @@ def run():
             # 2.12.0: for the popup's status line and live lux
             "luxNow": None if filt.live is None else round(filt.live, 1),
             "fadeTo": None if ctl.ramp is None else round(ctl.ramp[2]),
-            "glitch": filt.ignoring, "videoHold": video_hold, "waking": ctl.waking(t),
+            "videoHold": video_hold, "waking": ctl.waking(t),
             "dark": ctl.stable is not None and ctl.stable < c["kbdOnBelow"],
+            "restless": len(lux_moves) >= 4,  # 2.13.0: the settled lux moved 4+ times in a minute
             **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
         })
         # 2.9.0: 60 Hz while fading (was 10 Hz); 2.12.0: 10 Hz while the popup is open
