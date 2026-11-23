@@ -1,5 +1,7 @@
-"""Simulation of the v2 controller (no hardware). Prints a timeline log and
-asserts the MacBook-style behaviour. Run: python3 tests/simulate.py"""
+"""Simulation of the controller (no hardware): spikes, deadband, fades, the
+manual offset, fullscreen video, new day / resume, keyboard levels, HID
+bursts and the dark-end wobble. Prints a timeline log. Timings as of 2.6.0+
+(Apple ramps: 1.5-5 s up, 5-10 s down; big drops wait dimHoldSeconds)."""
 import importlib.machinery, importlib.util, os
 p = os.path.join(os.path.dirname(__file__), "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
@@ -26,27 +28,29 @@ def run(secs, lux, no_dim=False, manual=None, label=""):
     print(f"t={state['t']:6.1f}s  screen={state['screen']:.0f}% target={ctl.target():.0f}% kbd={state['kbd']}")
     return state["screen"]
 
-s = run(3, 200, label="office 200 lx")
+s = run(6, 200, label="office 200 lx")
 assert abs(s - ab.curve_pct(200, c)) < 1
 t0 = state["t"]; s = run(3, lambda t: 2 if t - t0 < 1.5 else 200, label="hand over sensor for 1.5 s (ignored)")
 assert abs(s - ab.curve_pct(200, c)) < 1
 s = run(6, 215, label="+7.5% lux (under 12% deadband, ignored)")
 assert abs(s - ab.curve_pct(200, c)) < 1
 # brighten fast
-t0 = state["t"]; run(2.0, 5000, label="walk to window 5000 lx")
-up_at = None
-before = state["screen"]; run(1.6, 5000)
-assert abs(state["screen"] - ab.curve_pct(5000, c)) < 1, "brightened within ~2 s settle + 1.5 s fade"
+run(2.0, 5000, label="walk to window 5000 lx")
+run(5.1, 5000)
+assert abs(state["screen"] - ab.curve_pct(5000, c)) < 1, "brightened within ~2 s settle + 5 s fade (65% -> 94% is under 1.5x)"
 # dim slowly
-run(12.5, 20, label="dark room 20 lx (big drop: waits dimHoldSeconds)")
-mid = run(3.5, 20)
-assert mid > ab.curve_pct(20, c) + 3, "still fading after 3.5 s (slow dim)"
-s = run(4, 20)
+bright = run(2.0, 20, label="dark room 20 lx (big drop: part-way first, fully after dimHoldSeconds)")
+assert abs(bright - ab.curve_pct(5000, c)) < 1, "no reaction to a big drop within 2 s"
+mid = run(6.0, 20)
+assert ab.curve_pct(20, c) + 3 < mid < bright - 3, "part-way dim first"
+s = run(3.5, 20)
+assert s > ab.curve_pct(20, c) + 1, "still fading 3.5 s into the full dim (slow dim)"
+s = run(2.5, 20)
 assert abs(s - ab.curve_pct(20, c)) < 1
 # manual offset
 s = run(3, 20, manual=s + 15, label="he raises brightness +15")
 assert abs(s - (ab.curve_pct(20, c) + 15)) < 1 and abs(ctl.offset - 15) < 1
-s = run(4, 40, label="20 -> 40 lx (2x, offset kept)")
+s = run(7.1, 40, label="20 -> 40 lx (2x, offset kept)")
 assert abs(ctl.offset - 15) < 1 and abs(s - min(100, ab.curve_pct(40, c) + 15)) < 1
 s = run(12, 300, label="20 -> 300 lx (15x, offset cleared)")
 assert ctl.offset == 0 and abs(s - ab.curve_pct(300, c)) < 1

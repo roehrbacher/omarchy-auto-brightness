@@ -35,4 +35,4 @@ while t < 60:
     if k is not None and k != ctl.kbd_want: ctl.kbd_want = k; kb = (k, t)
     t = round(t + 0.25, 3)
 print(f"no wake, 4 -> 0 lx: keyboard level {kb[0]} at {kb[1]-10:.1f}s after the drop")
-assert kb and kb[0] >= 1 and not ctl.dim_staged
+assert kb and kb[0] == 2 and not ctl.dim_staged  # 0 lx is below kbdLevel2Below (2.10.1)

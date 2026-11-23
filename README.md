@@ -2,46 +2,37 @@
 
 Screen brightness and keyboard light follow the laptop's **built-in ambient
 light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo.
+The goal is to behave like a MacBook: slow, smooth fades and no visible jumps,
+even when the XPS 14's HID light sensors send garbage.
 
-Version 2 works like a MacBook (no habit learning):
+Changes per version: [CHANGELOG.md](CHANGELOG.md).
 
-- 2.10.0: ignores the light sensors' short drop-outs to exactly 0 lx (seen Nov 3: the screen dimmed and came back in an unchanged room). An exact 0 from a lit sensor only counts once it holds 3.5 s, so real darkness still dims.
-- 2.9.0: smoother fades. Brightness now changes about 60 times a second during a fade (was 10) and moves in even perceived steps (log scale, like macOS) instead of straight lines, so no step is visible: brightening 5% -> 80% used to jump up to 39% at once, now at most ~5% (relative) per 1/60 s. Writes go to logind over one kept D-Bus connection (brightnessctl as fallback).
-- 2.8.1: fixes another full-brightness jump (Oct 30 22:31): when the two sensors glitched one after the other, the sensor still reading the real dark room was ignored and the other one's 43000 lx won. The sensor cross-check now always includes every sensor, and for 90 s after any impossible reading a dark -> sunlight jump is not believed at all.
-- 2.8.0: one light sensor alone sending garbage (~43000 lx or impossible 170000 lx in a dark room, for 10+ s) no longer maxes the screen: a sensor that reports an impossible value is ignored for 30 s, and when one sensor says sunlight while the other says dark, the lower one is used. Every brightness decision is now logged (raw and filtered lux, target, current, mode, trigger) to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
-- 2.7.0: waking from suspend or opening the lid reads the sensor fresh and follows it at once for 3 s (0.4 s fades, keyboard light without the 3 s wait), so a dark room is dark within ~3 s. Fixes the keyboard light never turning on when the dark reading landed inside the 2 lx deadband after a part-way dim.
-- 2.6.1: no behaviour change. Confirms (with a test) that brightness keeps following the light on the lock screen; the README wrongly said it held while locked. Removed the unused lock check.
-- 2.5.0: faster dimming. A big drop (sensor covered, lights off) now dims part-way after ~5 s (`dimQuickSeconds` 2.5 s after the 4 s sensor median: half the drop, counted in log-lux) and fully after ~10 s (`dimHoldSeconds` 8, was 12); fades down take 4 s (`dimSeconds`, was 7). Covering the sensor at 300 lx: first dim after 5 s, fully dark after ~14 s (was 14.5 s / ~21 s). Cost: train dips of 4-7 s now dim part-way (in the 23 Oct replay down to ~37 % instead of staying at ~65 %) and come back within ~1.5 s; 2 s dips still do nothing. Brightening and the spike/burst protection are unchanged. The keyboard light waits for the full dim (on after ~13 s of darkness).
-- 2.4.0: the screen gets the same wait: a drop to under half the light (`dimBigRatio`) must hold for 12 s (`dimHoldSeconds`, every sample) before the screen dims, so 2-7 s train dips (250 -> 0 lx) no longer fade it 67% -> 1%. Smaller dims and all brightening stay quick. The keyboard wait (`kbdOnSeconds`) is now 3 s on top of that, so a real dark tunnel or room still lights the keys after ~15-17 s.
-- 2.3.0: keyboard light like a MacBook: it only turns on (or goes to level 2) after the darkness has lasted 15 s (`kbdOnSeconds`), and turns off as soon as it is bright again. Short 0 lx dips on a train (shadows, tunnels, sensor dropouts of 2-7 s in a 200-400 lx cabin) no longer switch it on.
-- 2.2.2: implausible jumps (from under 50 lx to over 5x+500 lx, or over 20000 lx) must hold for 10 s with every sample high, so the XPS sensors' bogus 6 s bursts (0 -> 41008 lx in a dark room) no longer flash the screen to 100%. Normal brightening stays fast.
-- 2.2.1: dark-end hysteresis: lux changes under 2 lx are ignored and the curve treats 0-2 lx as dark, so the sensor's 0 <-> 1 lx wobble no longer fades the screen 1% <-> 13%.
-- 2.2.0: keeps adjusting on the lock screen (only pauses while the screen is DPMS-off) and re-applies the keyboard level after a pause; a 4 s per-sensor median drops the XPS 14 light sensors' bogus 1-2 s bursts (dark room suddenly reading ~40000 lx).
+## How it behaves
 
-
-- **Curve:** log-lux with gamma 0.8 between your min (default 8 %, the slider is the real floor) and max.
+- **Curve:** log-lux with gamma 0.8 between your min (default 8 %) and max. Your min slider is the real floor. 0 to 2 lx counts as dark, 10000 lx gives the max.
 - **Your change is an offset, not a pause.** Brightness keys move the curve up
   or down by that amount. The offset is dropped when the room light moves more
-  than 2.5x from where you set it, after resume / lid open, or the next day.
-- **Fades:** brightens in ~1.5 s, dims over ~7 s (smoothstep). Light changes
-  under 12 % and spikes or shadows shorter than 2 s are ignored. With two
-  sensors (XPS 14) the brighter one wins, so a hand over one does nothing.
-- **Never dims during a fullscreen video** (fullscreen window + an MPRIS player Playing).
-- **Fresh reading** on resume and when the lid opens.
+  than 2.5x from where you set it, after resume or lid open, or the next day.
+- **Reaction:** a light change must last 2 s (up to 4 s when dimming in the dark) after a 4 s per-sensor median. Changes under 12 % or under 2 lx are ignored. A drop to under half the light dims part-way first and fully only after it held 8 s, so short train tunnels and shadows do little. Covering the sensor at 300 lx: first dim after about 6.5 s, fully dark after about 20 s.
+- **Fades:** the length follows the size of the change, as in Apple's patent US 2012/0019493. Brightening 2x or more takes 1.5 s, 1.5x takes 5 s. Dimming up to 3x takes 5 s, 10x or more takes 10 s. Brightness is written 60 times a second in even perceived (log) steps.
+- **Sensor glitches:** each sensor's readings go through a 4 s median weighted by time, and the brighter sensor wins, so a hand over one sensor does nothing. An exact 0 lx from a lit sensor counts only after it held 3.5 s. A reading above 60000 lx ignores that sensor for 30 s. When one sensor says sunlight and the other says dark, the lower one is used. A jump from dark to sunlight must hold 10 s, and is not believed at all for 90 s after an impossible reading.
+- **Resume and lid open:** the sensor is read fresh and followed at once for 3 s, with 0.4 s fades.
+- **Never dims during a fullscreen video** (fullscreen window and an MPRIS player playing).
 - **Keyboard light (Apple-style, native levels only):** level 2 below 1 lx
-  (back to 1 only above 2 lx), level 1 below 4 lx, off above 12 lx; on/up only after 15 s of darkness, off at once; 4-12 lx
-  keeps whatever it is. Calibrated on the XPS 14 sensors (a lit room reads
-  ~16-35 lx, a covered sensor 0-3 lx). Only switched when the room crosses those lines, so
+  (back to 1 only above 2 lx), level 1 below 4 lx, off above 12 lx; 4 to 12 lx
+  keeps whatever it is. It goes on or up 3 s after the screen accepted the darkness (about 15 s after the lights go off) and off at once. Calibrated on the XPS 14 sensors (a lit room reads
+  about 16 to 35 lx, a covered sensor 0 to 3 lx). It is only switched when the room crosses those lines, so
   your own key presses stick. `kbdLevel2Below: 0` disables level 2. The inactivity timeout is the Dell firmware's own
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.
 - Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or the walk-away lock has dimmed it.
 - Writes through logind's SetBrightness (D-Bus, `brightnessctl` as fallback), so the user service needs no root.
+- Every decision (raw and filtered lux, target, current, mode, trigger) goes to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
 
 `omarchy-auto-brightness sensors` shows what the light sensors expose (on the
 XPS 14 the second one also reports colour temperature and chromaticity x/y).
 
-Tests: `for f in tests/test_*.py; do python3 $f; done` (`tests/simulate.py` still has pre-2.6.0 timings).
+Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f" || break; done`.
 
 ## Install / uninstall
 
@@ -52,8 +43,13 @@ Then add `{ "id": "timon.auto-brightness" }` to your bar. Click: popup with
 on/off, min, max and the keyboard switch. Right-click: on/off.
 
 CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off`.
-Settings: `~/.config/omarchy/auto-brightness.json` (also `curve`, `kbdOnBelow`,
-`kbdOffAbove`, `kbdLevel2Below`, `kbdLevel2Exit`, `gamma`, `floor`, `brightenSeconds`, `dimSeconds`, `luxDeadband`, `settleSeconds`, `offsetResetRatio`).
+Settings: `~/.config/omarchy/auto-brightness.json`. Besides `enabled`, `min`,
+`max` and `keyboard` it takes any key of `DEFAULTS` at the top of
+`bin/omarchy-auto-brightness`, for example `gamma`, `fullLux`, `kbdOnBelow`,
+`kbdOffAbove`, `kbdLevel2Below`, `kbdLevel2Exit`, `kbdOnSeconds`, `dimHoldSeconds`,
+`dimQuickSeconds`, `brightenSeconds`, `luxDeadband`, `settleSeconds` and
+`offsetResetRatio`. `"appleRamps": false` goes back to fixed fades
+(`brightenSeconds` up, `dimSeconds` down).
 
 ## Credits
 
@@ -61,20 +57,3 @@ Idea and survey of the problem from
 [ziouf/omarchy-adaptive-brightness](https://github.com/ziouf/omarchy-adaptive-brightness)
 (reviewed at 2dd87df). No code was copied: that plugin samples the webcam,
 this one only uses the light sensors. MIT, see LICENSE.
-
-## 2.6.0: Apple-style timing
-
-Copied from Apple's patents (no habit learning, light sensor only):
-
-- Fade length follows the size of the change (US 2012/0019493): dimming 1.5x or 3x takes
-  ~5 s, 10x or more ~10 s; brightening 1.5x takes ~5 s, 2x or more 1.5 s. Eyes adapt
-  slower to darkness, so the screen never dims faster than it brightens.
-- In the dark it waits longer before dimming further (US 10,235,970): the settle wait
-  doubles at 0 lx and is normal from 10 lx up. Brightening back stays quick.
-- Already in place: a change must last (settle, spike median, jump rule) and be big
-  enough (12 % / 2 lx deadband); readings outside 0-60000 lx are ignored; keyboard light
-  only in low light; the keyboard's own firmware idle-off is left alone.
-
-Not 1:1: Apple's actual lux curve is unpublished; True Tone and per-frame ramps don't
-exist here; Apple's curve learning is left out on purpose. `omarchy-auto-brightness`
-with `"appleRamps": false` in the config goes back to the 2.5.0 fades.
