@@ -2,6 +2,15 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.15.1
+
+Pre-release checks (poteto review, security audit, implicit state machines review, publishing hygiene). Two bug fixes and docs.
+
+- "Service not running" now shows when the service has died or was stopped. Before, the state file stayed in `$XDG_RUNTIME_DIR` and the popup and `status` kept showing its last values as live (for example after a hand-edited settings file with `"min": "abc"` made every restart crash before the first write). The daemon now stamps the file on every pass (`ts`); a stamp older than 30 s means not running. Test: `tests/test_stale_state.py`.
+- A popup click is no longer dropped when it repeats the value the popup sent last time and the setting was changed elsewhere in between (the CLI, or the popup on another monitor). Example: off in the popup, `omarchy-auto-brightness on` in a terminal, off in the popup again did nothing. Delivered values are now forgotten. Test: `tests/test_popup_pump.py`.
+- LICENSE: the "Portions" line named the wrong project (a clipboard manager); it now names the Omarchy shell panels the popup follows.
+- README: requirements, where the bar entry goes, and the walk-away flag explained without assuming a private plugin.
+
 ## 2.15.0
 
 Keyboard backlight capped at level 1 on low battery.

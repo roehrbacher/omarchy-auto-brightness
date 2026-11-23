@@ -70,7 +70,9 @@ Panel {
     if (actionProc.running) return
     for (var k in wanted) {
       var v = wanted[k]
-      if (sent[k] === v) continue
+      // delivered: forget it, so the next click is sent even if a change
+      // from elsewhere (CLI, another monitor's popup) put it back meanwhile
+      if (sent[k] === v) { delete wanted[k]; delete sent[k]; continue }
       sent[k] = v
       if (k === "enabled") actionProc.command = [tool, v ? "on" : "off"]
       else if (k === "keyboard") actionProc.command = [tool, "set", "keyboard", v ? "on" : "off"]
@@ -92,7 +94,7 @@ Panel {
   }
   function statusLine() {
     var m = st.mode || ""
-    if (m === "not running") return "Service not running"
+    if (!HeroLines.running(st, nowMs / 1000)) return "Service not running"
     if (m === "off" || !st.enabled) return "Off" + luxText()
     if (m === "auto") return "Following the light sensor" + luxText() + " · screen " + st.screen + "%"
     if (m === "walk-away dim") return "Held by the walk-away lock" + luxText()
@@ -102,7 +104,8 @@ Panel {
   // Hero status line, see HeroLines.js. Like stock Bluetooth/Tailscale:
   // one fixed line for a special state, otherwise lines cycling every 2.8 s.
   property int clockHour: new Date().getHours()
-  readonly property var heroLines: HeroLines.lines(st, clockHour)
+  property real nowMs: Date.now()
+  readonly property var heroLines: HeroLines.lines(st, clockHour, nowMs / 1000)
   property int phraseIndex: 0
   readonly property bool rotatingPhrases: heroLines.length > 1
   readonly property string heroMeta: heroLines[phraseIndex % heroLines.length]
@@ -142,13 +145,13 @@ Panel {
   FileView { id: watchView; path: root.watchFile; printErrors: false }
   Timer {
     interval: 1000; running: root.opened; repeat: true; triggeredOnStart: true
-    onTriggered: watchView.setText(String(Date.now()))
+    onTriggered: { root.nowMs = Date.now(); watchView.setText(String(root.nowMs)) }
   }
   Timer {
     // Closed: the bar tooltip's state, a file read every 10 s. Open: retry
     // the file once a second only while it is missing.
     interval: root.opened ? 1000 : 10000; running: true; repeat: true
-    onTriggered: if (!root.opened || root.stateMissing) stateView.reload()
+    onTriggered: { root.nowMs = Date.now(); if (!root.opened || root.stateMissing) stateView.reload() }
   }
   function refreshOnOpen() {
     stateView.reload()

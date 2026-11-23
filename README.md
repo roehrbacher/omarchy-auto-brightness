@@ -28,7 +28,7 @@ Changes per version: [CHANGELOG.md](CHANGELOG.md).
   (`/sys/class/leds/dell::kbd_backlight/stop_timeout`, 1 min): off when idle,
   back on at the next key press; changing it needs root.
 - **Low battery:** on battery below 15 % (`kbdLowBatteryPercent`, 0 = off) auto sets the keyboard backlight to level 1 at most, and lowers its own level 2 to 1. A key press to 2 still sticks; the charger lifts the cap. The battery is read from `/sys/class/power_supply` every 10 s (peripheral batteries are ignored). 15 % because Omarchy has no percentage-based power saver: it switches power profiles on plugging in or unplugging, and only warns at 10 %.
-- Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or the walk-away lock has dimmed it.
+- Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or a walk-away lock has dimmed it (any tool that creates `$XDG_RUNTIME_DIR/omarchy-walk-away.dimmed`; none ships with this plugin).
 - Writes through logind's SetBrightness (D-Bus, `brightnessctl` as fallback), so the user service needs no root.
 - Every decision (raw and filtered lux, target, current, mode, trigger) goes to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
 
@@ -39,10 +39,15 @@ Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f"
 
 ## Install / uninstall
 
+Needs: Omarchy's Quickshell shell (plugin manifest `schemaVersion` 1), Python 3,
+a laptop with an iio ambient light sensor (`/sys/bus/iio/devices/*/name` is
+`als`), and `python-gobject` for logind writes. Without `python-gobject`
+every write falls back to `brightnessctl`.
+
     ./install.sh          # script, user service, plugin copy; enables the service
     ./uninstall.sh
 
-Then add `{ "id": "timon.auto-brightness" }` to your bar. Right-click: on/off.
+Then add `{ "id": "timon.auto-brightness" }` to the bar in `~/.config/omarchy/shell.json`. Right-click: on/off.
 Click: a popup laid out like Omarchy's Bluetooth popup (same 380 px width).
 - **Header:** the on/off switch and a status line (`HeroLines.js`). A state
   that changes what the screen does shows one fixed line (turned off, lid

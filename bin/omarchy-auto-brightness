@@ -87,7 +87,8 @@ DEFAULTS = {
     "previewFadeSeconds": 0.15,  # ...with fades this short (slider drag in the popup)
 }
 MAX_LUX = 60000
-VERSION = "2.15.0"
+STALE_SECONDS = 30  # a state file older than this was left by a daemon that is not running
+VERSION = "2.15.1"
 
 
 def load_conf():
@@ -844,6 +845,7 @@ def run():
             trigger = "sensor"
 
         write_state({
+            "ts": round(time.time(), 1),
             "enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"],
             "lux": None if ctl.stable is None else round(ctl.stable, 1),
             "screen": round(bl.get() / bl.max * 100),
@@ -909,9 +911,9 @@ def main(argv):
         save_conf(c)
         c = load_conf()
     elif cmd == "kbd-level" and len(argv) == 3:
-        # 2.11.0: a manual level from the popup. Written like a key press:
-        # the daemon is not told, so it changes the light again only when the
-        # room moves into another keyboard range or after the screen wakes.
+        # Written like a key press: the daemon is not told, so it changes the
+        # light again only when the room moves into another keyboard range or
+        # after the screen wakes.
         kbd = kbd_dev()
         if kbd is None:
             print("no keyboard backlight", file=sys.stderr)
@@ -930,6 +932,8 @@ def main(argv):
             st = json.load(f)
     except (OSError, ValueError):
         st = {"mode": "not running"}
+    if time.time() - st.get("ts", time.time()) > STALE_SECONDS:
+        st["mode"] = "not running"
     st.update({"enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"]})
     kbd = kbd_dev()
     if kbd is not None:

@@ -10,9 +10,17 @@ function luxLabel(s) {
   return (l < 10 ? Math.round(l * 10) / 10 : Math.round(l)) + " lx"
 }
 
-function lines(s, hour) {
+// The daemon stamps the file on every pass (`ts`, seconds). An old stamp
+// means it died or was stopped and the file is left over (30 s, like
+// STALE_SECONDS in the daemon).
+function running(s, nowSec) {
+  if (s.mode === "not running") return false
+  return s.ts === undefined || s.ts === null || nowSec === undefined || nowSec - s.ts <= 30
+}
+
+function lines(s, hour, nowSec) {
   var m = s.mode || ""
-  if (m === "not running") return ["Service not running"]
+  if (!running(s, nowSec)) return ["Service not running"]
   if (!s.enabled || m === "off") return ["Turned off"]
   if (m === "lid closed") return ["Paused · lid closed"]
   // Holds that are internal (walk-away flag, blanked screen, no reading
