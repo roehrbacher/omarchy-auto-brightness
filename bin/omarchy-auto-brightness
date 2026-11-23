@@ -82,7 +82,7 @@ DEFAULTS = {
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
 }
 MAX_LUX = 60000
-VERSION = "2.10.1"
+VERSION = "2.10.2"
 
 
 def load_conf():
@@ -289,9 +289,13 @@ class Controller:
         self.ramp = None          # (t0, start, goal, duration)
         self.kbd_want = None
         self.kbd_dark = None      # (since, level) while waiting to turn the light on
-        self.dim_staged = False   # a quick part-way dim is in place, the full dim still pending
+        self.staged_to = None     # lux a big drop is heading for while only its part-way dim is applied
         self.wake_until = -1.0    # follow the sensor at once until then (resume / lid open)
         self.events = []
+
+    @property
+    def dim_staged(self):
+        return self.staged_to is not None
 
     def ev(self, t, msg):
         self.events.append((t, msg))
@@ -303,7 +307,7 @@ class Controller:
         self.kbd_want = None
         self.kbd_dark = None
         self.ramp = None
-        self.dim_staged = False
+        self.staged_to = None
         self.wake_until = t + self.c["wakeSeconds"]  # 2.7.0: fresh read on wake
 
     def waking(self, t):
@@ -320,7 +324,7 @@ class Controller:
                 self.ev(t, f"lux {self.stable:.1f} -> {lux:.1f} (wake)")
             self.stable = lux
             self.window = []
-            self.dim_staged = False
+            self.staged_to = None
             return
         ratio = (lux + 1) / (self.stable + 1)
         if abs(ratio - 1) < c["luxDeadband"] or abs(lux - self.stable) < c["luxAbsDeadband"]:
@@ -331,7 +335,7 @@ class Controller:
                 # stopped at ~1.2 lx and never reached keyboard level 2)
                 self.ev(t, f"lux {self.stable:.1f} -> {lux:.1f} (part-way dim finished)")
                 self.stable = lux
-            self.dim_staged = False
+            self.staged_to = None
             return
         side = ratio > 1
         if self.window and self.window[0][2] != side:
@@ -373,11 +377,11 @@ class Controller:
                         mid = ((self.stable + 1) * (new + 1)) ** 0.5 - 1
                         self.ev(t, f"lux {self.stable:.1f} -> {mid:.1f} (quick dim, part-way to {new:.1f})")
                         self.stable = mid
-                        self.dim_staged = True  # the run (and its start time) carries on
+                        self.staged_to = new  # the run (and its start time) carries on
                     return
                 win = run[::-1]
             elif c["dimHoldSeconds"]:
-                self.dim_staged = False
+                self.staged_to = None
                 win = [w for w in win if not big(w)]
             if t - win[0][0] < self.settle_seconds(not win[-1][2]):
                 return
@@ -385,7 +389,7 @@ class Controller:
         new = vals[len(vals) // 2]
         self.ev(t, f"lux {self.stable:.1f} -> {new:.1f}")
         self.stable = new
-        self.dim_staged = False
+        self.staged_to = None
         self.window = []
         if self.anchor is not None and self.offset:
             r = (new + 1) / (self.anchor + 1)
@@ -426,6 +430,12 @@ class Controller:
         return lux > c["jumpFactor"] * st + c["jumpAbsLux"] or lux > c["jumpHugeLux"]
 
     def manual(self, t, cur_pct, today):
+        if self.staged_to is not None:
+            # 2.10.2: a key press during the part-way dim answers the darkness
+            # it is heading for: accept that now, so the pending full dim does
+            # not clear the new offset and fade below what was just set
+            self.ev(t, f"lux {self.stable:.1f} -> {self.staged_to:.1f} (part-way dim finished by manual change)")
+            self.stable, self.staged_to, self.window = self.staged_to, None, []
         base = curve_pct(self.stable if self.stable is not None else 0, self.c)
         self.offset = cur_pct - base
         self.anchor = self.stable

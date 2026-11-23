@@ -2,6 +2,13 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.10.2
+
+Pre-release checks (security audit and implicit state machines review). One bug fix.
+
+- Pressing brightness up while the screen was only part-way dimmed no longer gets undone. Your offset was anchored to the part-way value (about 13 lx after lights off at 200 lx). When the full dim reached 0 lx about 6 s later, that looked like the light moving 14x, so the offset was cleared and the screen faded to the minimum. The README says the offset stays until the room light moves more than 2.5x from where you set it, and the room had not changed after the press. A key press during the part-way dim now accepts the darkness the dim was heading for, so your level stays. When the lights come back on, the 2.5x rule still clears the offset. Test: `tests/test_manual_during_dim.py`.
+- The part-way dim is now one explicit state, the lux it is heading for (`staged_to`), instead of a separate on/off flag.
+
 ## 2.10.1
 
 Quality pass. Two bug fixes, no other behaviour change.

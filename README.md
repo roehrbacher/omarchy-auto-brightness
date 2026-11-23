@@ -13,6 +13,8 @@ Changes per version: [CHANGELOG.md](CHANGELOG.md).
 - **Your change is an offset, not a pause.** Brightness keys move the curve up
   or down by that amount. The offset is dropped when the room light moves more
   than 2.5x from where you set it, after resume or lid open, or the next day.
+  A key press while the screen is only part-way dimmed accepts the darkness
+  it was heading for, so the full dim does not undo your change.
 - **Reaction:** a light change must last 2 s (up to 4 s when dimming in the dark) after a 4 s per-sensor median. Changes under 12 % or under 2 lx are ignored. A drop to under half the light dims part-way first and fully only after it held 8 s, so short train tunnels and shadows do little. Covering the sensor at 300 lx: first dim after about 6.5 s, fully dark after about 20 s.
 - **Fades:** the length follows the size of the change, as in Apple's patent US 2012/0019493. Brightening 2x or more takes 1.5 s, 1.5x takes 5 s. Dimming up to 3x takes 5 s, 10x or more takes 10 s. Brightness is written 60 times a second in even perceived (log) steps.
 - **Sensor glitches:** each sensor's readings go through a 4 s median weighted by time, and the brighter sensor wins, so a hand over one sensor does nothing. An exact 0 lx from a lit sensor counts only after it held 3.5 s. A reading above 60000 lx ignores that sensor for 30 s. When one sensor says sunlight and the other says dark, the lower one is used. A jump from dark to sunlight must hold 10 s, and is not believed at all for 90 s after an impossible reading.
