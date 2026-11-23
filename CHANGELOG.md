@@ -2,6 +2,15 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.14.0
+
+Fewer status lines, keyboard backlight as one row.
+
+- Removed status lines: "Waiting for the sensor", "Paused · screen off", "Held by walk-away" and "The room can't decide". The daemon still holds on a blanked screen and on the walk-away flag; while held (or before the first reading) the popup shows plain facts that stay true: "Room at N lx" and "Screen at N%" (or "Reading the room" when it has neither).
+- The `restless` state field and its tracking are gone.
+- Keyboard section is one row: "Keyboard backlight" with the switch on the right and a dim "Turns on automatically in the dark" under it (body / bodySmall, 1 px apart like a stock Bluetooth device row). No section title. Status lines say "Keyboard backlight N".
+- Popup height 309 -> 283 px.
+
 ## 2.13.0
 
 Status line round 3, keyboard section without help text.

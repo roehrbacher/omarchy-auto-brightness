@@ -303,40 +303,40 @@ Panel {
 
         PanelSeparator { visible: root.hasKeyboard; foreground: root.foreground }
 
-        // ---------- Keyboard light: does auto drive it ----------
-        Column {
+        // ---------- Keyboard backlight: one row, like a stock device row ----------
+        Item {
           objectName: "abKeyboard"
           visible: root.hasKeyboard
           width: parent.width
-          spacing: Style.space(10)
-
-          PanelSectionHeader {
-            objectName: "abKbdHeader"
-            text: "KEYBOARD LIGHT"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-          }
-
-          Item {
-            width: parent.width
-            implicitHeight: Math.max(kbdLabel.implicitHeight, kbdSw.implicitHeight)
+          implicitHeight: Math.max(kbdLabels.implicitHeight, kbdSw.implicitHeight)
+          Column {
+            id: kbdLabels
+            anchors.left: parent.left; anchors.right: kbdSw.left; anchors.rightMargin: Style.space(12)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(1)
             Text {
-              id: kbdLabel
-              objectName: "abKbdAutoLabel"
+              objectName: "abKbdLabel"
+              width: parent.width
               textFormat: Text.PlainText
-              anchors.left: parent.left; anchors.right: kbdSw.left; anchors.rightMargin: Style.space(12)
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Follow the room light"
+              text: "Keyboard backlight"
               elide: Text.ElideRight
               color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body
             }
-            ToggleSwitch {
-              id: kbdSw
-              objectName: "abKbdAuto"
-              anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-              checked: !!root.st.keyboard; foreground: root.foreground
-              onToggled: root.setSetting("keyboard", !root.st.keyboard)
+            Text {
+              objectName: "abKbdSub"
+              width: parent.width
+              textFormat: Text.PlainText
+              text: "Turns on automatically in the dark"
+              elide: Text.ElideRight
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
             }
+          }
+          ToggleSwitch {
+            id: kbdSw
+            objectName: "abKbdAuto"
+            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+            checked: !!root.st.keyboard; foreground: root.foreground
+            onToggled: root.setSetting("keyboard", !root.st.keyboard)
           }
         }
       }

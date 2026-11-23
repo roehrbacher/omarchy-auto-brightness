@@ -8,19 +8,18 @@ if not shutil.which("node"):
     print("node not installed: skipped"); sys.exit(0)
 base = {"enabled": True, "min": 8, "max": 100, "keyboard": True, "lux": 120, "luxNow": 126.4, "screen": 64,
         "target": 64, "offset": 0, "mode": "auto", "fadeTo": None, "videoHold": False, "waking": False,
-        "dark": False, "restless": False, "kbdLevel": 0, "kbdMax": 2}
+        "dark": False, "kbdLevel": 0, "kbdMax": 2}
 dark = {"lux": 0.5, "luxNow": 0.4, "dark": True, "screen": 8, "target": 8}
 cases = [  # (state, local hour, expected lines)
     ("following the light", {}, 14, ["Following the light · 126 lx", "Screen at 64%", "Reading the room"]),
     ("brightness key offset", {"offset": 10, "target": 74}, 14, ["Following the light · 126 lx", "Your +10% held", "Reading the room"]),
     ("keys pinned it to 100 %", {"offset": 40, "target": 100}, 14, ["Following the light · 126 lx", "Your keys maxed it out", "Reading the room"]),
     ("keys pinned it to 1 %", {"offset": -70, "target": 1}, 14, ["Following the light · 126 lx", "Your keys dimmed it all the way", "Reading the room"]),
-    ("dark room, keyboard light 2, evening", {**dark, "kbdLevel": 2}, 20, ["Following the light · 0.4 lx", "Screen at 8%", "Dark room · Keyboard light 2", "Pitch black in here"]),
-    ("dark room at night", {**dark, "kbdLevel": 2}, 23, ["Following the light · 0.4 lx", "Screen at 8%", "Dark room · Keyboard light 2", "Pitch black · night owl hours"]),
+    ("dark room, keyboard light 2, evening", {**dark, "kbdLevel": 2}, 20, ["Following the light · 0.4 lx", "Screen at 8%", "Dark room · Keyboard backlight 2", "Pitch black in here"]),
+    ("dark room at night", {**dark, "kbdLevel": 2}, 23, ["Following the light · 0.4 lx", "Screen at 8%", "Dark room · Keyboard backlight 2", "Pitch black · night owl hours"]),
     ("dark, keyboard follow off", {**dark, "lux": 2.5, "luxNow": 2.5, "keyboard": False}, 20, ["Following the light · 2.5 lx", "Screen at 8%", "Dark in here · keyboard is yours", "Reading the room"]),
-    ("key pressed in a lit room", {"kbdLevel": 1}, 14, ["Following the light · 126 lx", "Screen at 64%", "Keyboard light 1", "Reading the room"]),
+    ("key pressed in a lit room", {"kbdLevel": 1}, 14, ["Following the light · 126 lx", "Screen at 64%", "Keyboard backlight 1", "Reading the room"]),
     ("direct sunlight", {"lux": 31000, "luxNow": 32000, "screen": 100, "target": 100}, 13, ["Following the light · 32000 lx", "Screen at 100%", "Direct sunlight · shades on"]),
-    ("room light keeps changing", {"restless": True}, 14, ["Following the light · 126 lx", "Screen at 64%", "The room can't decide"]),
     ("min = max = 100", {"min": 100, "max": 100, "screen": 100, "target": 100}, 14, ["Always full blast"]),
     ("min = max = 1", {"min": 1, "max": 1, "screen": 1, "target": 1}, 14, ["Max 1% · vampire mode"]),
     ("min = max = 40", {"min": 40, "max": 40, "screen": 40, "target": 40}, 14, ["Locked at 40% · sensor on a break"]),
@@ -31,10 +30,11 @@ cases = [  # (state, local hour, expected lines)
     ("fullscreen video", {"videoHold": True}, 14, ["Holding for video"]),
     ("woke up", {"waking": True}, 14, ["Awake · matching the room"]),
     ("lid opened in a dark room", {**dark, "waking": True}, 23, ["Woke up in the dark · going easy"]),
-    ("walk-away", {"mode": "walk-away dim"}, 14, ["Held by walk-away"]),
-    ("screen off", {"mode": "screen off"}, 14, ["Paused · screen off"]),
+    ("walk-away flag hold", {"mode": "walk-away dim"}, 14, ["Room at 126 lx", "Screen at 64%"]),
+    ("screen blanked", {"mode": "screen off"}, 14, ["Room at 126 lx", "Screen at 64%"]),
     ("lid closed", {"mode": "lid closed"}, 14, ["Paused · lid closed"]),
-    ("no reading yet", {"mode": "no reading", "lux": None, "luxNow": None}, 14, ["Waiting for the sensor"]),
+    ("no reading yet", {"mode": "no reading", "lux": None, "luxNow": None}, 14, ["Screen at 64%"]),
+    ("no reading, no screen value", {"mode": "no reading", "lux": None, "luxNow": None, "screen": None}, 14, ["Reading the room"]),
     ("turned off", {"enabled": False, "mode": "off"}, 14, ["Turned off"]),
     ("service not running", {"mode": "not running"}, 14, ["Service not running"]),
 ]

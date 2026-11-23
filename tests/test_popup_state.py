@@ -49,7 +49,7 @@ events = [(20, lambda: room(40)),
           (100, lambda: room(0)),
           (140, lambda: cli("set", "min", "40")),
           (150, lambda: room(300)),
-          (172, lambda: room(20)), (184, lambda: room(300)), (196, lambda: room(20))]  # lights on/off/on
+]
 def sleep(dt):
     before = clock["t"]; clock["t"] += dt
     sleeps.append((round(before - 1000, 3), dt))
@@ -59,7 +59,7 @@ def sleep(dt):
     if popup["open"]:
         open(ab.WATCH_FLAG, "w").write("1")
         os.utime(ab.WATCH_FLAG, (clock["t"] + 1e9, clock["t"] + 1e9))
-    if clock["t"] > 1215: raise KeyboardInterrupt
+    if clock["t"] > 1170: raise KeyboardInterrupt
 ab.time.sleep = sleep
 ab.time.monotonic = lambda: clock["t"]
 ab.time.time = lambda: clock["t"] + 1e9
@@ -78,13 +78,8 @@ print(f"room 200 -> 40 lx: luxNow 40 after {first[0] - 20:.2f} s, settled lux mo
 # glitches: never shown as luxNow, flagged while dropped
 g1 = at(40, 41); g2 = at(80, 81)
 assert all(d["luxNow"] == 40 for t, d in g1 + g2), [d["luxNow"] for t, d in g1 + g2]
-assert all("glitch" not in d for t, d in states)
+assert all("glitch" not in d and "restless" not in d for t, d in states)
 print("170063 lx (impossible) and a 43000 lx one-sensor burst: luxNow stays 40, nothing about it in the state")
-# restless: the settled lux moved 4+ times within a minute (lights on/off/on)
-assert not any(d["restless"] for t, d in at(0, 170))
-first_restless = next(t for t, d in states if d["restless"])
-assert 184 < first_restless < 215, first_restless
-print(f"lights switched 4 times in 46 s: restless from {first_restless:.0f} s, never before")
 # cadence: 2 Hz closed, 10 Hz with the popup open (not fading)
 idle_closed = {dt for t, dt in sleeps if 60 <= t < 79}
 idle_open = {dt for t, dt in sleeps if 125 <= t < 139}
