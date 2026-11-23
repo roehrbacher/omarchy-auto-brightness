@@ -21,6 +21,7 @@ No camera, no habit learning. Works like a MacBook (details: README.md):
   omarchy-auto-brightness status       JSON state (for the bar widget)
   omarchy-auto-brightness on|off       enable / disable
   omarchy-auto-brightness set KEY VAL  min|max|keyboard
+  omarchy-auto-brightness kbd-level N  keyboard light to 0/1/2 now (auto may change it again later)
   omarchy-auto-brightness lux          print current lux once
   omarchy-auto-brightness sensors      what the light sensors expose (colour?)
 """
@@ -82,7 +83,7 @@ DEFAULTS = {
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
 }
 MAX_LUX = 60000
-VERSION = "2.10.2"
+VERSION = "2.11.0"
 
 
 def load_conf():
@@ -769,6 +770,7 @@ def run():
             "screen": round(bl.get() / bl.max * 100),
             "target": None if ctl.target() is None else round(ctl.target()),
             "offset": round(ctl.offset), "mode": reason,
+            **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
         })
         time.sleep(1 / 60 if busy else 0.5)  # 2.9.0: 60 Hz while fading (was 10 Hz)
 
@@ -788,6 +790,11 @@ def describe_sensors():
             info["chromaticityXY"] = [round(float(read(f"{d}/in_chromaticity_{a}_raw", "0")) * sc("chromaticity"), 3) for a in "xy"]
         out.append(info)
     return out
+
+
+def kbd_dev():
+    p = find_dev("leds", "*kbd_backlight")
+    return Dev(p) if p else None
 
 
 def main(argv):
@@ -815,6 +822,20 @@ def main(argv):
             return 2
         save_conf(c)
         c = load_conf()
+    elif cmd == "kbd-level" and len(argv) == 3:
+        # 2.11.0: a manual level from the popup. Written like a key press:
+        # the daemon is not told, so it changes the light again only when the
+        # room moves into another keyboard range or after the screen wakes.
+        kbd = kbd_dev()
+        if kbd is None:
+            print("no keyboard backlight", file=sys.stderr)
+            return 1
+        try:
+            level = int(argv[2])
+        except ValueError:
+            print(__doc__, file=sys.stderr)
+            return 2
+        kbd.set(max(0, min(kbd.max, level)))
     elif cmd != "status":
         print(__doc__, file=sys.stderr)
         return 2
@@ -824,6 +845,9 @@ def main(argv):
     except (OSError, ValueError):
         st = {"mode": "not running"}
     st.update({"enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"]})
+    kbd = kbd_dev()
+    if kbd is not None:
+        st.update({"kbdLevel": kbd.get(), "kbdMax": kbd.max})
     print(json.dumps(st))
     return 0
 

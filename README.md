@@ -41,10 +41,18 @@ Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f"
     ./install.sh          # script, user service, plugin copy; enables the service
     ./uninstall.sh
 
-Then add `{ "id": "timon.auto-brightness" }` to your bar. Click: popup with
-on/off, min, max and the keyboard switch. Right-click: on/off.
+Then add `{ "id": "timon.auto-brightness" }` to your bar. Right-click: on/off.
+Click: a popup laid out like Omarchy's Bluetooth popup. The header has the
+on/off switch and what the service is doing. **Screen** has the min and max
+sliders and the current brightness. **Keyboard light (manual)** (only on
+laptops with a keyboard backlight) has Off, 1 and 2 buttons that set the light
+now and show its current level, and the "Auto in the dark" switch. A manual
+level works like a key press: auto changes it again only when the room gets
+dark or bright enough for another level, the screen comes back on, the lid
+opens or the laptop wakes. While open, the popup reads the daemon's state file
+every 0.25 s (changes show within about 0.25 s); closed, every 10 s.
 
-CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off`.
+CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off|kbd-level 0`.
 Settings: `~/.config/omarchy/auto-brightness.json`. Besides `enabled`, `min`,
 `max` and `keyboard` it takes any key of `DEFAULTS` at the top of
 `bin/omarchy-auto-brightness`, for example `gamma`, `fullLux`, `kbdOnBelow`,

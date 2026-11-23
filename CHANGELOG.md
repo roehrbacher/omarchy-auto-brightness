@@ -2,6 +2,16 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.11.0
+
+New popup layout, manual keyboard light levels, and the popup no longer lags.
+
+- The popup uses Omarchy's own building blocks, like the stock Bluetooth popup: `PanelHero` header (big icon, bold title, caps status line, on/off switch on the right), `PanelSeparator`, and sections with `PanelSectionHeader` 14 px apart, all flush left, 380 px wide. Body text is `Style.font.body`, help text `Style.font.bodySmall`, dim text `Qt.darker(foreground, 1.4)`.
+- Keyboard light buttons Off, 1 and 2 under "Keyboard light (manual)". The selected button is the current level. A manual level works like a key press: the daemon is not told, so it changes the light again only when the room gets dark or bright enough for another level, the screen comes back on after a hold, the lid opens or the laptop wakes. The section is hidden on machines without a keyboard backlight. New CLI command `kbd-level N` (clamped to the keyboard's levels).
+- The state file and `status` now include `kbdLevel` and `kbdMax`.
+- Popup lag fixed. The popup ran `omarchy-auto-brightness status` (a Python start) every 1.5 s while open, so a change showed up to 1.5 s late (measured offscreen: median 743 ms, max 1483 ms after the daemon wrote it). Before 2.11.0 the keyboard level was not shown at all, and after a click the switches waited for the next poll. The popup now reads the state file directly every 0.25 s while open (median 226 ms, max 257 ms) and every 10 s while closed, with no process started. After a click, the new settings and keyboard level show at once.
+- Note: the lux shown is the settled value the screen follows, so it still moves only after the 4 s sensor median and 2 s settle time. That delay is part of the filtering, not the popup.
+
 ## 2.10.2
 
 Pre-release checks (security audit and implicit state machines review). One bug fix.
