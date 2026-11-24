@@ -12,6 +12,8 @@ here = os.path.dirname(__file__)
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
+ab.READER_THREAD = False  # 2.16.0: read the fake sensors inline, on the fake clock
+ab.replace_upstream = lambda keyboard: []  # 2.16.0: never touch the real systemd units
 
 def dev(name, maxv, cur):
     d = os.path.join(tmp, "sys", name); os.makedirs(d)
@@ -46,7 +48,7 @@ assert rc == 2 and level() == 2
 cli("kbd-level", "0"); assert level() == 0
 print("kbd-level CLI: sets 1, clamps 5 to 2, rejects x, status shows the level")
 
-# daemon: dark room, auto turns it to 2; a manual Off sticks while the room
+# daemon: dark room, auto turns it to 1 (2.16.0 default max); a manual Off sticks while the room
 # stays dark; lights on (off anyway) and off again: auto lights it again
 room(0)
 clock = {"t": 1000.0}
@@ -69,11 +71,12 @@ except KeyboardInterrupt:
 k = [(n, v, round(t - 1000, 1)) for n, v, t in writes if n != "intel_backlight" and t]
 print("keyboard writes (name, level, s):", k)
 i = [w[0] for w in k].index("manual")
-assert ("dell::kbd_backlight", 2) in [w[:2] for w in k[:i]], "auto set level 2 in the dark first"
+assert ("dell::kbd_backlight", 1) in [w[:2] for w in k[:i]], "auto set level 1 in the dark first"
+assert all(w[1] != 2 for w in k if w[0] == "dell::kbd_backlight"), "auto never sets level 2 by default"
 assert k[i + 1][:2] == ("dell::kbd_backlight", 0), "the manual Off itself"
 auto_after = k[i + 2:]
 assert auto_after and min(w[2] for w in auto_after) >= 70, f"no auto write while the dark room did not change: {auto_after}"
 st = json.load(open(ab.STATE))
-assert auto_after[-1][:2] == ("dell::kbd_backlight", 2) and st["kbdLevel"] == 2, (auto_after, st)
+assert auto_after[-1][:2] == ("dell::kbd_backlight", 1) and st["kbdLevel"] == 1, (auto_after, st)
 print("manual Off stuck in the unchanged dark room; auto lit it again after the room got bright and dark again")
 print("ok")

@@ -12,20 +12,26 @@ No camera, no habit learning. Works like a MacBook (details: README.md):
     filters the XPS HID sensors' bursts, 0 lx drop-outs and impossible values;
     the brighter of the two sensors wins
   - never dims while a fullscreen video plays
-  - keyboard light: native levels only (off/1/2), on below 4 lx once the
-    darkness held, off above 12 lx at once; the Dell firmware's own inactivity
-    timeout turns it off and the next key press turns it back on (we never
-    fight that)
+  - keyboard light: native levels only, auto uses level 1 at most (kbdMaxLevel,
+    like macOS's ~25 % keys in the dark), on below 4 lx once the darkness held,
+    off above 12 lx at once; a key press sticks, also across a lock blank; the
+    Dell firmware's own inactivity timeout turns it off and the next key press
+    turns it back on (we never fight that)
+  - sensors read 2x a second (4x with the popup open) in a background thread,
+    brightness written 60x a second while fading
+  - replaces other automatic brightness while it runs (omarchy-brightness-auto,
+    wluma, Omarchy's keyboard auto): stopped for the session, never disabled
 
   omarchy-auto-brightness run          the daemon (systemd user service)
   omarchy-auto-brightness status       JSON state (for the bar widget)
   omarchy-auto-brightness on|off       enable / disable
-  omarchy-auto-brightness set KEY VAL  min|max|keyboard
+  omarchy-auto-brightness set KEY VAL  min|max|keyboard|kbd-max (highest keyboard level auto sets, default 1)
   omarchy-auto-brightness kbd-level N  keyboard light to 0/1/2 now (auto may change it again later)
   omarchy-auto-brightness lux          print current lux once
   omarchy-auto-brightness sensors      what the light sensors expose (colour?)
+  omarchy-auto-brightness restore-replaced  start the auto-brightness services it stopped (uninstall)
 """
-import datetime, glob, json, math, os, subprocess, sys, time
+import datetime, fcntl, glob, json, math, os, shutil, subprocess, sys, time
 
 HOME = os.environ.get("HOME", "")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "omarchy", "auto-brightness.json")
@@ -35,6 +41,16 @@ LOGDIR = os.path.join(os.environ.get("XDG_STATE_HOME", HOME + "/.local/state"), 
 DLOG = os.path.join(LOGDIR, "decisions.jsonl")
 HOLD_FLAG = os.path.join(RUN, "omarchy-walk-away.dimmed")  # walk-away lock owns the screen
 WATCH_FLAG = os.path.join(RUN, "omarchy-auto-brightness.watch")  # 2.12.0: the popup is open (touched every 1 s)
+# 2.16.0: other auto-brightness services this plugin replaces while it runs
+# (like an Omarchy plugin with "clonedFrom"). Stopped for the session only,
+# never disabled or masked; `restore-replaced` (uninstall.sh) starts them again.
+REPLACES_SCREEN = ("omarchy-brightness-auto.service",   # omacom/omarchy#8025
+                   "wluma.service")                     # omacom/omarchy-mac-pkgs#144 (runs wluma)
+REPLACES_KBD = ("omarchy-brightness-keyboard-auto.service",)  # omacom/omarchy#14557, omarchy-mac-pkgs#142
+REPLACED = os.path.join(RUN, "omarchy-auto-brightness.replaced")  # units stopped this session
+# omacom/omarchy#13148 runs inside the shell and has an off flag instead of a unit
+KBD_TOGGLE = os.path.join(HOME, ".local/state/omarchy/toggles/keyboard-backlight-auto-off")
+KBD_TOGGLE_MINE = os.path.join(LOGDIR, "keyboard-toggle-set-by-auto-brightness")
 
 DEFAULTS = {
     "enabled": True,
@@ -44,10 +60,14 @@ DEFAULTS = {
     "fullLux": 10000,      # lux that maps to max
     "keyboard": True,
     "kbdOnBelow": 4,       # lux: keyboard level 1 below this (XPS 14 sensors: lit room ~16-35 lx)
-    "kbdLevel2Below": 1,   # lux: level 2 below this (very dark; 0 = never)
+    "kbdMaxLevel": 1,      # 2.16.0: highest level auto sets (1 = about half on the XPS 14; macOS keeps
+                           # the keys at ~25 % in the dark). 2 lets auto use level 2 below kbdLevel2Below.
+                           # A key press to a higher level is never undone.
+    "kbdLevel2Below": 1,   # lux: level 2 below this (very dark; 0 = never; only with kbdMaxLevel 2+)
     "kbdLevel2Exit": 2,    # lux: and back to level 1 only above this (hysteresis)
     "kbdOffAbove": 12,     # lux: off above this
-    "kbdLowBatteryPercent": 15,  # 2.15.0: on battery below this %, auto sets the keyboard to level 1 at most (0 = off)
+    "kbdLowBatteryPercent": 15,  # 2.15.0: on battery below this %, auto sets the keyboard to level 1 at most (0 = off);
+                                 # 2.16.0: only does something when kbdMaxLevel is above 1
     "kbdOnSeconds": 3.0,   # darker keyboard level only after the darkness held this long; big drops
                            # already wait dimHoldSeconds, so a lasting 250 -> 0 lx drop lights it after ~15 s
     "dimHoldSeconds": 8.0,   # a drop to under half the light must hold this long before the screen dims fully
@@ -69,6 +89,10 @@ DEFAULTS = {
     "offsetResetRatio": 2.5,
     "zeroTrustSeconds": 3.5,   # 2.10.0: an exact 0 lx from a lit sensor is a HID dropout until it held this long (seen: up to 2.5 s)
     "zeroDropoutLux": 20.0,    # ...and only counts as a dropout when that sensor's median was above this
+    "zeroDropoutSeconds": 20.0,  # 2.16.0: ...but zeros on their own wait this long (logged dropouts: up to ~17 s
+                                 # on both sensors at once in a 500-1100 lx room); zeroTrustSeconds applies
+                                 # once a faint real reading (0 < lux <= zeroDropoutLux) shows it is getting dark
+    "zeroDarkSeconds": 10.0,     # ...a faint reading this long before the zeros started still counts
     "sensorMedianSeconds": 4.0,  # per-sensor median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
     "jumpSeconds": 10.0,   # an implausible jump (dark -> sunlight) must hold this long, every sample high
     "jumpDarkLux": 50.0,   # "dark" stable value for the jump rule
@@ -77,6 +101,16 @@ DEFAULTS = {
     "jumpHugeLux": 20000.0,  # ...or above this from a dark stable value
     "wakeSeconds": 3.0,      # 2.7.0: after resume / lid open, follow the sensor at once for this long
     "wakeFadeSeconds": 0.4,  # ...with short fades, and set the keyboard light without waiting
+    "wakeDarkLux": 10.0,     # 2.16.0: waking in a room darker than this, the screen still dims at once but
+                             # brightens with the normal (slower) fade (Apple US 8,743,161 / US 11,755,143, luminescence shock avoidance)
+    "kbdRestoreSeconds": 1.0,  # 2.16.0: after a blank, resume or lid open, the keyboard waits this long
+                               # (and for Omarchy's `omarchy-brightness-keyboard restore`) before deciding
+    "kbdRestoreMaxSeconds": 6.0,  # ...but never longer than this for a restore that never comes
+    "sampleSeconds": 0.5,    # 2.16.0: read the light sensors twice a second, also while fading (was: on every
+                             # 60 Hz fade pass); brightness writes stay at 60 Hz
+    "popupSampleSeconds": 0.25,  # ...4 times a second while the popup is open (live lux)
+    "returnSeconds": 120.0,  # 2.16.0: a dark -> bright jump back to (about) the light of the last
+                             # this-many seconds is a return, not a "sustained jump" that must hold jumpSeconds
     "glitchQuarantineSeconds": 30.0,  # 2.8.0: a sensor that just reported an impossible value
                                       # (> MAX_LUX, e.g. 170063 lx) is ignored this long
     "disagreeRatio": 20.0,   # 2.8.0: one sensor > jumpHugeLux while the other says < jumpDarkLux
@@ -88,7 +122,7 @@ DEFAULTS = {
 }
 MAX_LUX = 60000
 STALE_SECONDS = 30  # a state file older than this was left by a daemon that is not running
-VERSION = "2.15.3"
+VERSION = "2.16.0"
 
 
 def load_conf():
@@ -103,9 +137,9 @@ def load_conf():
     return c
 
 
-def save_conf(c):
+def save_conf(c, extra=()):
     os.makedirs(os.path.dirname(CONF), exist_ok=True)
-    keep = {k: c[k] for k in ("enabled", "min", "max", "keyboard") if k in c}
+    keep = {k: c[k] for k in ("enabled", "min", "max", "keyboard", *extra) if k in c}
     try:
         with open(CONF) as f:
             old = json.load(f)
@@ -148,6 +182,72 @@ def lux_raw(sens):
         except (TypeError, ValueError):
             out.append(None)
     return out
+
+
+READER_THREAD = True  # tests with a fake clock read inline instead
+
+
+class SensorReader:
+    """2.16.0: reads the light sensors at most every `interval` seconds.
+    Each sysfs read of an XPS HID light sensor is a round trip to the sensor
+    hub (0.1-0.5 s measured, the kernel waits up to 5 s), so reading on every
+    60 Hz fade pass stalled the fade and multiplied the reads; the logged
+    impossible values came 11x more often per hour while fading. A
+    background thread reads, the loop takes the newest sample (or None)."""
+
+    def __init__(self, sens, threaded=None):
+        import threading
+        self.sens, self.interval = sens, 0.5
+        self.threaded = READER_THREAD if threaded is None else threaded
+        self.last = None      # (t, samples, ms) not taken yet
+        self.read_at = None   # inline: when we last read
+        self.ms = [None] * len(sens)
+        self.stale = -1e18    # samples read before this (monotonic) are dropped
+        if self.threaded:
+            self.lock, self.wake = threading.Lock(), threading.Event()
+            threading.Thread(target=self._loop, name="sensors", daemon=True).start()
+
+    def _read(self):
+        out, ms = [], []
+        for path, scale in self.sens:
+            t0 = time.monotonic()
+            out.extend(lux_raw([(path, scale)]))
+            ms.append(round((time.monotonic() - t0) * 1000))
+        return time.monotonic(), out, ms
+
+    def _loop(self):
+        while True:
+            t0 = time.monotonic()
+            got = self._read()
+            with self.lock:
+                if t0 >= self.stale:
+                    self.last = got
+            self.wake.wait(max(0.0, self.interval - (time.monotonic() - t0)))
+            self.wake.clear()
+
+    def flush(self, t):
+        """Forget what was read before t (resume, lid open) and read again now."""
+        if self.threaded:
+            with self.lock:
+                self.stale, self.last = t, None
+            self.wake.set()
+        else:
+            self.read_at = None
+
+    def take(self, t):
+        """(t, samples, ms) read since the last take, or None."""
+        if not self.threaded:
+            if self.read_at is not None and t - self.read_at < self.interval - 1e-6:
+                return None
+            self.read_at = t
+            _, samples, ms = self._read()
+            self.ms = ms
+            return t, samples, ms
+        with self.lock:
+            got, self.last = self.last, None
+        if got is not None:
+            self.ms = got[2]
+        return got
 
 
 def lux_once(sens):
@@ -198,6 +298,9 @@ class SensorFilter:
         self.zero_since = [None] * n  # 2.10.0: start of a run of exact-0 samples per sensor
         self.last_glitch = None       # last sample inside a glitch episode
         self.live = None              # 2.12.0: this sample's lux, glitch rules but no median (popup)
+        self.lit_ref = [None] * n     # 2.16.0: last median per sensor, kept through a quarantine
+        self.dim_seen = None          # 2.16.0: last faint real reading (the room really is dark)
+        self.lit_seen = None          # 2.16.0: last lit in-range reading on any sensor
 
     def feed(self, t, samples):
         """samples: raw lux per sensor (None = unreadable). Values outside
@@ -205,6 +308,16 @@ class SensorFilter:
         c, notes = self.c, []
         q = c["glitchQuarantineSeconds"]
         now = [None] * len(samples)
+        # 2.16.0: a faint but real reading (0 < lux <= zeroDropoutLux) from a
+        # sensor in good standing is evidence that the room really is dark
+        # ...and any lit reading in range (even from a quarantined sensor)
+        # is evidence that it is not: both sensors sit in the same bezel, so
+        # one reading exactly 0 next to a lit one is a dropout
+        for i, v in enumerate(samples):
+            if v is not None and 0 < v <= c["zeroDropoutLux"] and t >= self.bad_until[i]:
+                self.dim_seen = t
+            if v is not None and c["zeroDropoutLux"] < v <= MAX_LUX:
+                self.lit_seen = t
         for i, (h, v) in enumerate(zip(self.hist, samples)):
             if v is not None and not (0 <= v <= MAX_LUX):
                 if t >= self.bad_until[i]:
@@ -212,20 +325,30 @@ class SensorFilter:
                 self.bad_until[i] = t + q
                 h.clear()
                 v = None
-            # 2.10.0: in a real session both XPS HID sensors kept dropping to
-            # exactly 0 for 0.5-2.5 s at a time (106000 raw -> 0 -> 106000)
-            # in an unchanged room; the lower median then read 0 and the
-            # screen dimmed part-way and came back. A lit sensor's exact 0 is
-            # ignored unless it holds zeroTrustSeconds (real darkness still wins).
+            # 2.10.0: both XPS HID sensors keep dropping to exactly 0 in an
+            # unchanged room. The kernel's HID sensor read returns 0 when the
+            # sensor hub sends no value (drivers/hid/hid-sensor-hub.c), so an
+            # exact 0 from a lit sensor means "no data", not darkness.
+            # 2.16.0: logged runs of 6-17 s on both sensors at once, often
+            # next to impossible values, dimmed a 500-1100 lx room to 42 % or
+            # 1 %. The sensor's last lit level now survives the quarantine
+            # (lit_ref), and exact zeros wait zeroDropoutSeconds unless a faint
+            # real reading shows the room is going dark (then zeroTrustSeconds,
+            # as before). Real darkness still wins, it just has to last.
             if v == 0:
                 if self.zero_since[i] is None:
                     self.zero_since[i] = t
-                m = self.medians[i]
-                lit = m is not None and c["zeroDropoutLux"] < m <= c["jumpHugeLux"]
-                if lit and t - self.zero_since[i] < c["zeroTrustSeconds"]:
-                    v = None
-                elif lit:
-                    h.clear()  # held long enough: drop the old light samples at once
+                refs = [m if m is not None else r for m, r in zip(self.medians, self.lit_ref)]
+                lit = any(r is not None and c["zeroDropoutLux"] < r <= c["jumpHugeLux"] for r in refs)
+                if lit:
+                    # the wait runs from the last lit reading on any sensor
+                    since = max(self.zero_since[i], self.lit_seen if self.lit_seen is not None else -1e18)
+                    dark = self.dim_seen is not None and self.dim_seen >= since - c["zeroDarkSeconds"]
+                    wait = c["zeroTrustSeconds"] if dark else c["zeroDropoutSeconds"]
+                    if self.lit_seen == t or t - since < wait:
+                        v = None
+                    else:
+                        h.clear()  # held long enough: drop the old light samples at once
             elif v is not None:
                 self.zero_since[i] = None
             if v is not None:
@@ -234,11 +357,13 @@ class SensorFilter:
             while h and t - h[0][0] > self.secs:
                 h.pop(0)
             self.medians[i] = time_median(h)
+            if self.medians[i] is not None:
+                self.lit_ref[i] = self.medians[i]
         ok = [i for i, m in enumerate(self.medians) if m is not None and t >= self.bad_until[i]]
-        if not ok:  # every sensor quarantined: fall back to whatever is left
-            ok = [i for i, m in enumerate(self.medians) if m is not None]
-            if ok and any(t < b for b in self.bad_until):
-                notes.append("all sensors quarantined")
+        if not ok and any(m is not None for m in self.medians) and any(t < b for b in self.bad_until):
+            # 2.16.0: every usable sensor is quarantined: hold (was: fall back
+            # to the quarantined ones, whose fresh 0 lx dimmed a lit room)
+            notes.append("all sensors quarantined, holding")
         vals = [self.medians[i] for i in ok]
         best = max(vals) if vals else None
         # 2.8.1: the cross-sensor check looks at EVERY sensor with a median,
@@ -294,8 +419,12 @@ class SensorFilter:
         return best
 
     def clear(self):
+        """Fresh start (resume, lid open): forget the old room."""
         for h in self.hist:
             h.clear()
+        n = len(self.hist)
+        self.medians, self.lit_ref, self.zero_since = [None] * n, [None] * n, [None] * n
+        self.dim_seen = self.lit_seen = None
 
 
 def curve_pct(lux, c):
@@ -323,7 +452,9 @@ class Controller:
         self.kbd_dark = None      # (since, level) while waiting to turn the light on
         self.staged_to = None     # lux a big drop is heading for while only its part-way dim is applied
         self.wake_until = -1.0    # follow the sensor at once until then (resume / lid open)
+        self.screen_wake_until = -1.0  # 2.16.0: short fades until then (the screen came back from a blank)
         self.preview_until = -1.0  # 2.12.0: a min/max change is followed at once until then
+        self.bright_before = None  # 2.16.0: (t, lux) the last time a lit room went dark
         self.events = []
 
     @property
@@ -341,12 +472,20 @@ class Controller:
         self.kbd_dark = None
         self.ramp = None
         self.staged_to = None
+        self.bright_before = None
         self.wake_until = t + self.c["wakeSeconds"]  # 2.7.0: fresh read on wake
 
     def waking(self, t):
         return t is not None and t < self.wake_until
 
     def feed_lux(self, t, lux):
+        before = self.stable
+        self._feed_lux(t, lux)
+        dark = self.c["jumpDarkLux"]
+        if before is not None and before >= dark and self.stable is not None and self.stable < dark:
+            self.bright_before = (t, before)  # 2.16.0: for returnSeconds
+
+    def _feed_lux(self, t, lux):
         c = self.c
         if lux is None:
             return
@@ -373,7 +512,7 @@ class Controller:
         side = ratio > 1
         if self.window and self.window[0][2] != side:
             self.window = []
-        jump = self.implausible(lux)
+        jump = self.implausible(lux, t)
         self.window.append((t, lux, side, jump))
         if jump:
             # bogus HID bursts (0 -> 41008 lx for ~6 s in a dark room): accept
@@ -456,11 +595,20 @@ class Controller:
         f = min(1.0, max(0.0, lg(r / 3) / lg(10 / 3)))
         return 5.0 + 5.0 * f
 
-    def implausible(self, lux):
+    def implausible(self, lux, t=None):
         c, st = self.c, self.stable
         if st is None or st >= c["jumpDarkLux"]:
             return False
-        return lux > c["jumpFactor"] * st + c["jumpAbsLux"] or lux > c["jumpHugeLux"]
+        if not (lux > c["jumpFactor"] * st + c["jumpAbsLux"] or lux > c["jumpHugeLux"]):
+            return False
+        # 2.16.0: back to about the light of a moment ago is a return, not a
+        # dark -> sunlight HID burst: it brightens after the normal settle
+        # time (a false dim at 1100 lx stayed at 1 % for 10 s waiting here)
+        b = self.bright_before
+        if (b is not None and t is not None and t - b[0] <= c["returnSeconds"]
+                and lux <= b[1] * c["offsetResetRatio"] and lux <= c["jumpHugeLux"]):
+            return False
+        return True
 
     def manual(self, t, cur_pct, today):
         if self.staged_to is not None:
@@ -500,8 +648,12 @@ class Controller:
                 return None
             if t < self.preview_until:
                 dur = self.c["previewFadeSeconds"]
-            elif self.waking(t):
-                dur = self.c["wakeFadeSeconds"]
+            elif self.waking(t) or t < self.screen_wake_until:
+                # 2.16.0: like a MacBook waking its display, match the room at
+                # once, except brightening in a dark room (eyes adapted to the
+                # dark): that takes the normal fade (Apple US 8,743,161)
+                dark_up = want > cur_pct and self.stable < self.c["wakeDarkLux"]
+                dur = self.ramp_seconds(cur_pct, want) if dark_up else self.c["wakeFadeSeconds"]
             else:
                 dur = self.ramp_seconds(cur_pct, want)
             self.ramp = (t, cur_pct, want, dur)
@@ -517,19 +669,38 @@ class Controller:
         la, lb = math.log(max(a, 0.5)), math.log(max(b, 0.5))
         return math.exp(la + (lb - la) * p)
 
-    def kbd_level(self, kbd_max, t=None):
-        """Wanted keyboard level or None (= leave as is). Like a MacBook:
-        light goes on (or up) only after the darkness lasted kbdOnSeconds,
-        goes off (or down) as soon as it is bright again."""
+    def kbd_band(self, kbd_max, before=None):
+        """2.16.0: the level the room asks for now, without timers (None =
+        the 4-12 lx dead zone, keep). Capped at kbdMaxLevel and kbd_max.
+        `before` is the level auto had chosen (for the level 2 hysteresis)."""
         c, lux = self.c, self.stable
         if lux is None:
             return None
-        l2 = c["kbdLevel2Below"]
+        top = max(0, min(kbd_max, int(c["kbdMaxLevel"])))
+        l2 = c["kbdLevel2Below"] if top >= 2 else 0
+        if l2 and (lux < l2 or (before == 2 and lux <= max(l2, c["kbdLevel2Exit"]))):
+            return min(2, top)
+        if lux < c["kbdOnBelow"]:
+            return min(1, top)
+        if lux > c["kbdOffAbove"]:
+            return 0
+        return None
+
+    def kbd_level(self, kbd_max, t=None):
+        """Wanted keyboard level or None (= leave as is). Like a MacBook:
+        light goes on (or up) only after the darkness lasted kbdOnSeconds,
+        goes off (or down) as soon as it is bright again. Never above
+        kbdMaxLevel (2.16.0: 1 by default)."""
+        c, lux = self.c, self.stable
+        if lux is None:
+            return None
+        kbd_max = max(0, min(kbd_max, int(c["kbdMaxLevel"])))
+        l2 = c["kbdLevel2Below"] if kbd_max >= 2 else 0
         l2_exit = max(l2, c["kbdLevel2Exit"])
         if l2 and (lux < l2 or (self.kbd_want == 2 and lux <= l2_exit)):
             want = min(2, kbd_max)
         elif lux < c["kbdOnBelow"]:
-            want = 1
+            want = min(1, kbd_max)
         elif lux > c["kbdOffAbove"]:
             want = 0
         else:
@@ -724,6 +895,122 @@ def hold_reason(enabled, lid_closed, walk_away, screen_off, have_reading):
     return "auto"
 
 
+def kbd_saved(kbd):
+    """Omarchy's lock blank record: `omarchy-brightness-keyboard off` saves the
+    level here before blanking the keys, `restore` puts it back and deletes it."""
+    return os.path.join(RUN, f"omarchy-brightness-keyboard-{kbd.name}")
+
+
+def blank_saved(kbd, max_age):
+    """A fresh lock blank record exists (the lock screen has the keys blanked,
+    or its restore is still to come). Older than max_age: stale, ignored."""
+    try:
+        st = os.stat(kbd_saved(kbd))
+    except OSError:
+        return False
+    return st.st_size > 0 and time.time() - st.st_mtime < max_age
+
+
+def kbd_write(kbd, level, max_age):
+    """2.16.0: write the keyboard level under the lock Omarchy's off/restore
+    take, and never behind a fresh blank record. False = try again later."""
+    fd = None
+    try:
+        fd = os.open(kbd_saved(kbd) + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if fd is not None:  # off/restore is running right now
+            os.close(fd)
+            return False
+        fd = None           # no runtime dir to lock in: write anyway
+    try:
+        if blank_saved(kbd, max_age):
+            return False
+        kbd.set(level)
+        return True
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _systemctl(*args, timeout=5):
+    try:
+        return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+def replace_upstream(keyboard):
+    """2.16.0: stop other auto-brightness services for this session (they
+    would fight over the same backlight) and say so. Returns log lines."""
+    units = list(REPLACES_SCREEN) + (list(REPLACES_KBD) if keyboard else [])
+    out = []
+    r = _systemctl("is-active", *units)
+    states = r.stdout.split() if r is not None else []
+    for u, state in zip(units, states):
+        if state not in ("active", "activating", "reloading"):
+            continue
+        _systemctl("stop", u, timeout=15)
+        try:
+            with open(REPLACED, "a") as f:
+                f.write(u + "\n")
+        except OSError:
+            pass
+        out.append(f"stopped {u} for this session (Auto Brightness replaces it)")
+    if keyboard and shutil.which("omarchy-toggle-keyboard-backlight-auto") and not os.path.exists(KBD_TOGGLE):
+        try:
+            os.makedirs(os.path.dirname(KBD_TOGGLE), exist_ok=True)
+            os.makedirs(os.path.dirname(KBD_TOGGLE_MINE), exist_ok=True)
+            open(KBD_TOGGLE, "a").close()
+            open(KBD_TOGGLE_MINE, "a").close()
+            subprocess.run(["omarchy-shell", "-q", "omarchy.keyboard-backlight", "sync"],
+                           capture_output=True, timeout=5)
+            out.append("turned off Omarchy's automatic keyboard backlight (Auto Brightness replaces it)")
+        except Exception:
+            pass
+    return out
+
+
+def restore_replaced(keyboard=True):
+    """Undo replace_upstream: start what it stopped (if still enabled) and
+    remove the keyboard flag it set. Used by uninstall.sh."""
+    out = []
+    try:
+        with open(REPLACED) as f:
+            units = list(dict.fromkeys(l.strip() for l in f if l.strip()))
+    except OSError:
+        units = []
+    left = []
+    for u in units:
+        if not keyboard and u not in REPLACES_KBD:
+            left.append(u)
+            continue
+        r = _systemctl("is-enabled", u)
+        if r is not None and r.stdout.strip() in ("enabled", "enabled-runtime"):
+            _systemctl("start", u, timeout=15)
+            out.append(f"started {u} again")
+    try:
+        if left:
+            with open(REPLACED, "w") as f:
+                f.write("".join(u + "\n" for u in left))
+        else:
+            os.remove(REPLACED)
+    except OSError:
+        pass
+    if keyboard and os.path.exists(KBD_TOGGLE_MINE):
+        for f in (KBD_TOGGLE, KBD_TOGGLE_MINE):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        try:
+            subprocess.run(["omarchy-shell", "-q", "omarchy.keyboard-backlight", "sync"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+        out.append("turned Omarchy's automatic keyboard backlight back on")
+    return out
+
+
 def run():
     sens = sensors()
     bl_path = find_dev("backlight", "*")
@@ -746,8 +1033,24 @@ def run():
     was_closed = False
     last_wall, last_mono = time.time(), time.monotonic()
     reason = ""
+    # 2.16.0: the sensors are read in the background at most every
+    # sampleSeconds; the loop itself still runs at 60 Hz while fading, for
+    # smooth brightness writes
+    reader = SensorReader(sens)
+    samples, filtered = [None] * len(sens), None
+    # 2.16.0: after a blank, resume or lid open the keyboard waits for
+    # Omarchy's restore: (since, the level auto had chosen before)
+    kbd_pending = None
+    saw_blank = False        # a lock blank record existed during this screen-off hold
+    last_replace = None
+    prev_reason = ""
     while True:
         t = time.monotonic()
+        if last_replace is None or t - last_replace >= 60:
+            last_replace = t
+            for msg in replace_upstream(c["keyboard"] and kbd is not None):
+                log(msg)
+                dlog.write(event=msg, trigger="replace")
         m = os.path.getmtime(CONF) if os.path.exists(CONF) else None
         if m != conf_mtime:
             old, (c, conf_mtime) = c, (load_conf(), m)
@@ -758,30 +1061,46 @@ def run():
         # resume detection: wall clock jumped further than the monotonic one
         wall = time.time()
         if (wall - last_wall) - (t - last_mono) > 20:
+            kbd_pending = (t, ctl.kbd_want if kbd_pending is None else kbd_pending[1])
             ctl.reset(t, "resume")
             trigger = "resume"
             filt.clear()
             last_set = None
+            reader.flush(t)
         last_wall, last_mono = wall, t
         closed = lid_closed()
         if was_closed and not closed:
+            kbd_pending = (t, ctl.kbd_want if kbd_pending is None else kbd_pending[1])
             ctl.reset(t, "lid opened")
             trigger = "lid opened"
             filt.clear()
             last_set = None
+            reader.flush(t)
         was_closed = closed
         ctl.new_day(t, datetime.date.today().isoformat())
-        samples = lux_raw(sens)
-        filtered = filt.feed(t, samples)
-        ctl.feed_lux(t, filtered)
+        reader.interval = c["popupSampleSeconds"] if popup_open() else c["sampleSeconds"]
+        got = reader.take(t)
+        if got is not None:
+            ts, samples, _ = got
+            filtered = filt.feed(ts, samples)
+            ctl.feed_lux(ts, filtered)
         msgs = [msg for _, msg in ctl.events]
         if filt.note:
             log(filt.note)
             msgs.insert(0, filt.note)
+            filt.note = ""  # 2.16.0: not every pass feeds the filter any more
         for msg in [m for _, m in ctl.events]:
             log(msg)
         ctl.events.clear()
 
+        if prev_reason == "screen off" and kbd is not None:
+            # 2.16.0: Omarchy's wake runs `dpms on` and then the keyboard
+            # restore, which deletes the blank record: once it is gone the
+            # screen is on, so look again now instead of after the 2 s cache
+            if os.path.exists(kbd_saved(kbd)):
+                saw_blank = True
+            elif saw_blank:
+                _cache.pop("dpms", None)
         reason = hold_reason(c["enabled"], closed, os.path.exists(HOLD_FLAG), screen_off, ctl.stable is not None)
         video_hold = False
         low_bat = False
@@ -789,12 +1108,25 @@ def run():
         cur = bl.get()
         busy = False
         if reason == "auto" and held:
-            # coming back from a hold (screen off, walk-away, lid): re-apply the
-            # keyboard level, since others (lock blank/restore) changed it
-            ctl.kbd_want = None
+            # 2.16.0: coming back from a hold. The keyboard waits for Omarchy's
+            # restore and then keeps the level unless the room crossed a
+            # keyboard line meanwhile (was: always re-applied, which undid a
+            # key press to off and could race the restore).
+            if kbd_pending is None:
+                kbd_pending = (t, ctl.kbd_want)
+            if prev_reason in ("screen off", "walk-away dim"):
+                # like a MacBook display waking: match the room right away
+                ctl.screen_wake_until = t + c["wakeSeconds"]
+                trigger = "screen on"
+        if reason != "screen off":
+            saw_blank = False
+        prev_reason = reason
         held = reason != "auto"
         if reason == "auto":
-            if last_set is not None and abs(cur - last_set) > bl.max * 0.015:
+            # 2.16.0: any change of 2 raw steps / 0.5 % is yours (was 1.5 %,
+            # which faded Omarchy's 1 % steps back); we compare against the
+            # exact raw value we wrote, so our own writes never count
+            if last_set is not None and abs(cur - last_set) >= max(2, bl.max * 0.005):
                 ctl.manual(t, cur / bl.max * 100, datetime.date.today().isoformat())
             no_dim = fullscreen_video()
             tg = ctl.target()
@@ -807,19 +1139,34 @@ def run():
                 cur = raw
             busy = ctl.ramp is not None
             last_set = cur
-            if kbd and c["keyboard"]:
-                # 2.15.0: low battery caps what auto sets at level 1; a key
-                # press to 2 still sticks (only transitions are written)
-                low_bat = low_battery(c)
-                want = ctl.kbd_level(min(kbd.max, 1) if low_bat else kbd.max, t)
+            if kbd and c["keyboard"] and kbd_pending is not None:
+                since, before = kbd_pending
+                waited = t - since
+                # the record is as old as the blank (hours, maybe): any record
+                # means the restore is still to come
+                restoring = blank_saved(kbd, float("inf"))
+                if (ctl.stable is not None and waited >= c["kbdRestoreSeconds"]
+                        and (not restoring or waited >= c["kbdRestoreMaxSeconds"])):
+                    kbd_pending = None
+                    ctl.kbd_want, ctl.kbd_dark = before, None
+                    band = ctl.kbd_band(kbd.max, before)
+                    if before is not None and (band is None or band == before):
+                        msgs.append(f"keyboard left as it is after {trigger} (room still level {before})")
+            if kbd and c["keyboard"] and kbd_pending is None:
+                # 2.15.0: low battery caps what auto sets at level 1; 2.16.0:
+                # only matters when kbdMaxLevel is above 1. A key press to a
+                # higher level still sticks (only transitions are written).
+                top = min(kbd.max, int(c["kbdMaxLevel"]))
+                low_bat = top > 1 and low_battery(c)
+                want = ctl.kbd_level(1 if low_bat else kbd.max, t)
                 # only act on transitions, so the firmware idle-off and the
                 # user's own key presses are never overridden
                 if want is not None and want != ctl.kbd_want:
-                    why = " (low battery cap)" if low_bat and kbd.max > 1 else ""
-                    log(f"lux={ctl.stable:.1f} keyboard -> {want}{why}")
-                    msgs.append(f"keyboard -> {want}{why}")
-                    kbd.set(want)
-                    ctl.kbd_want = want
+                    why = " (low battery cap)" if low_bat else ""
+                    if kbd_write(kbd, want, c["kbdRestoreMaxSeconds"]):
+                        log(f"lux={ctl.stable:.1f} keyboard -> {want}{why}")
+                        msgs.append(f"keyboard -> {want}{why}")
+                        ctl.kbd_want = want
             for et, msg in ctl.events:
                 log(msg)
                 msgs.append(msg)
@@ -835,6 +1182,7 @@ def run():
             dlog.write(event="; ".join(msgs) if msgs else "heartbeat", trigger=trigger,
                        raw=[None if v is None else round(v, 1) for v in samples],
                        median=[None if v is None else round(v, 1) for v in filt.medians],
+                       readMs=reader.ms,  # 2.16.0: how long each sensor read took
                        filtered=None if filtered is None else round(filtered, 1),
                        stable=None if ctl.stable is None else round(ctl.stable, 1),
                        target=None if tg is None else round(tg, 1),
@@ -859,8 +1207,9 @@ def run():
             "lowBattery": low_bat,  # 2.15.0: the keyboard cap at level 1 is active
             **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
         })
-        # 2.9.0: 60 Hz while fading (was 10 Hz); 2.12.0: 10 Hz while the popup is open
-        time.sleep(1 / 60 if busy else 0.1 if popup_open() else 0.5)
+        # 2.9.0: 60 Hz while fading; idle at the sensor cadence (2.16.0: the
+        # sensors themselves are read at most 2 Hz, 4 Hz with the popup open)
+        time.sleep(1 / 60 if busy else reader.interval)
 
 
 def describe_sensors():
@@ -895,6 +1244,10 @@ def main(argv):
     if cmd == "sensors":
         print(json.dumps(describe_sensors(), indent=1))
         return 0
+    if cmd == "restore-replaced":
+        for msg in restore_replaced():
+            print(msg)
+        return 0
     c = load_conf()
     if cmd in ("on", "off", "toggle"):
         c["enabled"] = (cmd == "on") or (cmd == "toggle" and not c["enabled"])
@@ -905,10 +1258,12 @@ def main(argv):
             c[k] = int(float(v))
         elif k in ("keyboard", "kbd"):
             c["keyboard"] = v in ("on", "1", "true")
+        elif k in ("kbd-max", "kbdMaxLevel"):
+            c["kbdMaxLevel"] = max(0, int(float(v)))  # 2.16.0: highest level auto sets
         else:
             print(__doc__, file=sys.stderr)
             return 2
-        save_conf(c)
+        save_conf(c, ("kbdMaxLevel",) if k in ("kbd-max", "kbdMaxLevel") else ())
         c = load_conf()
     elif cmd == "kbd-level" and len(argv) == 3:
         # Written like a key press: the daemon is not told, so it changes the

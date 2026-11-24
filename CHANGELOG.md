@@ -2,6 +2,19 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.16.0
+
+No more dims in a lit, unchanged room, plus keyboard, wake and replacement fixes.
+
+- **Unexpected dims fixed.** The XPS sensors report exactly 0 lx when a read gets no answer, sometimes for 6 to 17 s, and 2.15 believed it in three ways: after an impossible reading had cleared a sensor's history it forgot the room was lit and trusted zeros at once; the 3.5 s check lapsed once the 4 s median aged out; and with every sensor quarantined it fell back to their fresh 0. The dark-to-bright jump rule then held the false dim for 10 s more. Now each sensor remembers its last lit median across a quarantine; zeros are never trusted while any sensor reads a lit room; exact zeros on their own count only after 20 s (`zeroDropoutSeconds`), or after 3.5 s as before when a faint 1 to 20 lx reading came first (lights off, a hand over both sensors); all sensors quarantined holds the screen; and a jump back to the light from before a dim (within `returnSeconds`, 2 min) is followed at once. Replay of the three logged events: `tests/test_xps_glitch_dims.py` with `tests/xps-glitch-dims.jsonl` (2.15.3: 1 % with the keyboard at 2, 52 %, 71 %; now 81 %, 74 %, 100 %, held, keyboard off). Lasting darkness that reads only exact 0 on both sensors now takes about 23 s to the first dim (keyboard about 31 s).
+- **Small manual changes stick:** a change of 0.5 % (at least 2 raw steps) counts as yours, so +1 % is no longer faded back. `tests/test_manual_small_step.py`.
+- **Keyboard after a lock blank:** auto waits for Omarchy's `omarchy-brightness-keyboard restore` (up to 6 s, writes under its lock), so your level comes back, including off, and auto only changes it when the room crossed a keyboard line during the blank. Fixes the race with the restore and the off-then-bright flash. `tests/test_kbd_blank.py`.
+- **Auto never sets keyboard level 2:** `kbdMaxLevel` 1 by default, like macOS (about 25 % in the dark); `set kbd-max 2` brings level 2 back. A key press to 2 still sticks. The low-battery cap and its "Low battery" line only apply with level 2 allowed.
+- **Sensor reads 2 Hz** (4 Hz with the popup open) in a background thread instead of on every 60 Hz fade step; fades stay at 60 Hz and are no longer stalled by 0.2 to 0.5 s reads. In 48 h of XPS log, 30 % of the impossible readings fell during fades, which were 3.8 % of the time. Each decision line logs `readMs`. `tests/test_sensor_cadence.py`.
+- **Screen wake like a MacBook:** after a blank the room is read fresh and followed with a 0.4 s fade (Apple US 8,743,161 / US 11,755,143); brightening in a dark room (under 10 lx) keeps the normal fade. `tests/test_screen_wake.py`.
+- **Replaces other automatic brightness** like a `clonedFrom` plugin: `omarchy-brightness-auto.service`, `wluma.service` and `omarchy-brightness-keyboard-auto.service` are stopped for the session (never disabled or masked), and Omarchy's keyboard-auto toggle is set. `restore-replaced` (in `uninstall.sh`) undoes it. `tests/test_replace_upstream.py`.
+- Tests that run the daemon loop share `tests/loop_harness.py`.
+
 ## 2.15.3
 
 Docs only, no behaviour change. The README now says this is tuned for and only

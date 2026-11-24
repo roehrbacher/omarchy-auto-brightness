@@ -15,6 +15,8 @@ here = os.path.dirname(__file__)
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
+ab.READER_THREAD = False  # 2.16.0: read the fake sensors inline, on the fake clock
+ab.replace_upstream = lambda keyboard: []  # 2.16.0: never touch the real systemd units
 
 def dev(name, maxv, cur):
     d = os.path.join(tmp, "sys", name); os.makedirs(d)
@@ -46,7 +48,7 @@ events = [(20, lambda: room(40)),
           (40, lambda: sensor(s0, 170063)), (41, lambda: sensor(s0, 40)),          # impossible value
           (80, lambda: sensor(s0, 43000)), (81, lambda: sensor(s0, 40)),           # in-range one-sensor burst
           (90, lambda: popup.update(open=True)),
-          (100, lambda: room(0)),
+          (100, lambda: room(1)), (101, lambda: room(0)),  # lights off (a faint 1 lx first, like a real room)
           (140, lambda: cli("set", "min", "40")),
           (150, lambda: room(300)),
 ]
@@ -80,11 +82,11 @@ g1 = at(40, 41); g2 = at(80, 81)
 assert all(d["luxNow"] == 40 for t, d in g1 + g2), [d["luxNow"] for t, d in g1 + g2]
 assert all("glitch" not in d and "restless" not in d for t, d in states)
 print("170063 lx (impossible) and a 43000 lx one-sensor burst: luxNow stays 40, nothing about it in the state")
-# cadence: 2 Hz closed, 10 Hz with the popup open (not fading)
+# cadence: 2 Hz closed, 4 Hz with the popup open (not fading)
 idle_closed = {dt for t, dt in sleeps if 60 <= t < 79}
 idle_open = {dt for t, dt in sleeps if 125 <= t < 139}
-assert idle_closed == {0.5} and idle_open == {0.1}, (idle_closed, idle_open)
-print("sampling: 0.5 s closed, 0.1 s with the popup open")
+assert idle_closed == {0.5} and idle_open == {0.25}, (idle_closed, idle_open)
+print("sampling: 0.5 s closed, 0.25 s with the popup open (2.16.0: sensors at most 4 Hz)")
 # preview: min 8 -> 40 in the dark room is on screen within 0.5 s, fadeTo shows it
 screen_at = lambda t: next(d["screen"] for tt, d in states if tt >= t)
 assert screen_at(139.9) <= 9, screen_at(139.9)

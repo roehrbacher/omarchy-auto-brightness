@@ -12,6 +12,8 @@ here = os.path.dirname(__file__)
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
+ab.READER_THREAD = False  # 2.16.0: read the fake sensors inline, on the fake clock
+ab.replace_upstream = lambda keyboard: []  # 2.16.0: never touch the real systemd units
 
 def dev(name, maxv, cur):
     d = os.path.join(tmp, "sys", name); os.makedirs(d)
@@ -45,9 +47,11 @@ ab.write_state = lambda d: (states.append((round(clock["t"] - 1000, 1), d)), rea
 
 clock = {"t": 1000.0}
 def conf(**kv):
+    kv.setdefault("kbdMaxLevel", 2)  # 2.16.0: the cap only matters when auto may use level 2
     os.makedirs(os.path.dirname(ab.CONF), exist_ok=True)
     json.dump(kv, open(ab.CONF, "w"))
     os.utime(ab.CONF, (clock["t"] + 1e9, clock["t"] + 1e9))
+conf()
 events = {1030: lambda: supply("BAT0", capacity=12),
           1060: lambda: (writes.append(("key", 2)), open(kb + "/brightness", "w").write("2\n")),
           1090: lambda: (supply("BAT0", status="Charging"), supply("AC", online=1)),
@@ -78,4 +82,13 @@ assert between(130, 150) == [2], "kbdLowBatteryPercent 0: no cap"
 low = lambda t0: next(d["lowBattery"] for t, d in states if t >= t0)
 assert low(20) is False and low(45) is True and low(100) is False and low(125) is True and low(145) is False
 print("cap at 12 %: 2 -> 1; key press to 2 stuck; charger lifts it; 0 disables it; lowBattery in the state")
+# 2.16.0 default (kbdMaxLevel 1): auto never uses level 2, so the cap has
+# nothing to do: level 1 in the dark at 12 % too, and no "Low battery" line
+import loop_harness
+lp = loop_harness.Loop(lux=0.5, screen=100)
+lp.ab.POWER_SUPPLY = ps; supply("BAT0", capacity=12, status="Discharging"); supply("AC", online=0)
+lp.run(40)
+assert [v for v, t in lp.kbd_writes()] == [1] and lp.level() == 1, lp.kbd_writes()
+assert not any(d.get("lowBattery") for t, d in lp.states)
+print("default max level 1: dark room at 12 % battery -> level 1, no cap shown")
 print("ok")

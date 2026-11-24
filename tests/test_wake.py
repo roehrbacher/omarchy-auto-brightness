@@ -9,7 +9,7 @@ loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
 
 def sim(lux_at, wake=True, secs=30):
-    c = dict(ab.DEFAULTS); c.update(min=1, max=100)
+    c = dict(ab.DEFAULTS); c.update(min=1, max=100, kbdMaxLevel=2)  # level 2 is opt-in since 2.16.0
     ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"])
     if wake: ctl.reset(0.0, "resume")
     t, cur, kbd, dark_at, kbd_at = 0.0, 63.0, None, None, None
@@ -28,7 +28,7 @@ print(f"wake in the dark (stale 4 lx first): screen 1% after {dark_at:.1f}s, key
 assert dark_at is not None and dark_at <= 4.0, dark_at
 assert kbd and kbd >= 1 and kbd_at <= 4.0, (kbd, kbd_at)
 # deadband regression without wake: 4 lx -> 0 lx steady must end the staged dim and light the keyboard
-c = dict(ab.DEFAULTS); ctl = ab.Controller(c); filt = ab.SensorFilter(2, 4.0); t = 0.0; kb = None
+c = dict(ab.DEFAULTS); c.update(kbdMaxLevel=2); ctl = ab.Controller(c); filt = ab.SensorFilter(2, 4.0); t = 0.0; kb = None
 while t < 60:
     v = 4.0 if t < 10 else 0.0; ctl.feed_lux(t, filt.feed(t, [v, v])); ctl.step(t, 50)
     k = ctl.kbd_level(3, t)

@@ -43,10 +43,15 @@ for d in (2, 4, 6, 7):
 print("0 lx dips of 2-7 s: keyboard stays off")
 
 # a real lasting darkness: on after ~15 s of darkness, off at once after
-ons, offs = sim(lambda t: 0.0 if 30 <= t < 120 else 250.0, 150)
+ons, offs = sim(lambda t: (1.0 if t < 31 else 0.0) if 30 <= t < 120 else 250.0, 150)
 assert ons and 30 + 10 <= ons[0][0] <= 30 + 16, ons
 assert offs and offs[-1][1] == 0 and offs[-1][0] - 120 <= 4, offs
-print("90 s darkness: on after %.1f s, off %.1f s after the light returned" % (ons[0][0] - 30, offs[-1][0] - 120))
+print("90 s darkness (1 lx, then 0): on after %.1f s, off %.1f s after the light returned" % (ons[0][0] - 30, offs[-1][0] - 120))
+# 2.16.0: exactly 0.0 on both sensors alone first waits zeroDropoutSeconds
+Z = ab.DEFAULTS["zeroDropoutSeconds"]
+ons, offs = sim(lambda t: 0.0 if 30 <= t < 120 else 250.0, 150)
+assert ons and 30 + Z <= ons[0][0] <= 30 + Z + 16, ons
+print("90 s of exact 0.0 lx: on after %.1f s" % (ons[0][0] - 30))
 
 # flicker: alternating 0 / 250 lx every 5 s for 2 min never turns it on
 ons, _ = sim(lambda t: 0.0 if int(t / 5) % 2 else 250.0, 150)

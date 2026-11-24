@@ -12,6 +12,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
+ab.READER_THREAD = False  # 2.16.0: read the fake sensors inline, on the fake clock
+ab.replace_upstream = lambda keyboard: []  # 2.16.0: never touch the real systemd units
 d = tmp + "/intel_backlight"; os.makedirs(d)
 open(d + "/max_brightness", "w").write("1000\n"); open(d + "/brightness", "w").write("500\n")
 s0 = tmp + "/als0"; open(s0, "w").write("300\n")

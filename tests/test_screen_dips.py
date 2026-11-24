@@ -53,9 +53,19 @@ for d in (4, 6, 7):
     lo, first, end = sim(lambda t: 0.0 if 30 <= t < 30 + d else 250.0, 90)
     assert lo >= partial_floor(250) - 1 and end >= ab.curve_pct(250, C) - 1, (d, lo, end)
 print("0 lx dips of 4-7 s: only part-way (>= %.0f%%), then back" % partial_floor(250))
-lo, first, cur = sim(lambda t: 0.0 if t >= 30 else 250.0, 90)
+lo, first, cur = sim(lambda t: (1.0 if t < 31 else 0.0) if t >= 30 else 250.0, 90)
 assert first is not None and first - 30 <= 7 and cur <= 2, (first, cur)  # 2.10.0: was 6 s
-print("lasting darkness: dimming starts after %.1f s, ends at %.0f%%" % (first - 30, cur))
+print("lasting darkness (1 lx, then 0): dimming starts after %.1f s, ends at %.0f%%" % (first - 30, cur))
+# 2.16.0: the XPS dropouts (exactly 0.0 on both sensors for up to ~17 s in a
+# lit room) do nothing at all; exact zeros alone still dim once they last
+Z = ab.DEFAULTS["zeroDropoutSeconds"]
+for d in (8, 12, 17):
+    lo, first, end = sim(lambda t: 0.0 if 30 <= t < 30 + d else 250.0, 90)
+    assert first is None, (d, first)
+print("exact 0 lx dropouts of 8-17 s: screen does not dim")
+lo, first, cur = sim(lambda t: 0.0 if t >= 30 else 250.0, 120)
+assert first is not None and first - 30 <= Z + 3.5 and cur <= 2, (first, cur)
+print("lasting exact 0.0 lx: dimming starts after %.1f s, ends at %.0f%%" % (first - 30, cur))
 lo, first, cur = sim(lambda t: 150.0 if t >= 30 else 250.0, 60)
 assert first is not None and first - 30 <= 5, first
 print("small drop 250 -> 150 lx: dims after %.1f s (unchanged)" % (first - 30))

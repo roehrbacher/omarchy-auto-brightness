@@ -11,12 +11,16 @@ p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
 
-def sim(lux_at, secs):
+def sim(lux_at, secs, sample=None):
+    """sample=None: feed the sensors on every pass (the 2.10-2.15 cadence);
+    sample=0.25: at most every 0.25 s like 2.16.0, while writes stay at 60 Hz."""
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
     ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"], c)
-    t, cur, peak, fades = 0.0, None, 0.0, 0
+    t, cur, peak, fades, last = 0.0, None, 0.0, 0, None
     while t < secs:
-        ctl.feed_lux(t, filt.feed(t, lux_at(t)))
+        if sample is None or last is None or t - last >= sample - 1e-6:
+            last = t
+            ctl.feed_lux(t, filt.feed(t, lux_at(t)))
         if cur is None and ctl.target() is not None: cur = ctl.target()
         if cur is not None:
             if ctl.ramp is None and abs(ctl.target() - cur) >= 1: fades += 1
@@ -47,4 +51,11 @@ def real(t):
 peak, end, c = sim(real, 60)
 print(f"real 300 -> 3000 lx during a fade: end {end:.0f}% (want {ab.curve_pct(3000, c):.0f}%)")
 assert abs(end - ab.curve_pct(3000, c)) < 1
+
+# 2.16.0: the daemon reads the sensors at most 4 times a second, also while
+# fading. The same burst and the same real change come out the same.
+for name, fn, want in (("burst", lamp_and_burst, ab.curve_pct(300, c)), ("real", real, ab.curve_pct(3000, c))):
+    peak, end, _ = sim(fn, 60, sample=0.25)
+    print(f"4 Hz sensor reads, {name}: peak {peak:.0f}%, end {end:.0f}% (want {want:.0f}%)")
+    assert abs(end - want) < 1 and (name == "real" or peak < want + 1)
 print("ok")

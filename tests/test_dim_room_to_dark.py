@@ -10,7 +10,7 @@ loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
 
 def sim(before, secs=60):
-    c = dict(ab.DEFAULTS); c.update(min=1, max=100)
+    c = dict(ab.DEFAULTS); c.update(min=1, max=100, kbdMaxLevel=2)  # level 2 is opt-in since 2.16.0
     ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"], c)
     t, cur, levels = 0.0, 50.0, []
     while t < secs:

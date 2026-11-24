@@ -12,6 +12,8 @@ here = os.path.dirname(__file__)
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
+ab.READER_THREAD = False  # 2.16.0: read the fake sensors inline, on the fake clock
+ab.replace_upstream = lambda keyboard: []  # 2.16.0: never touch the real systemd units
 
 def dev(name, maxv, cur):
     d = os.path.join(tmp, "sys", name); os.makedirs(d)
@@ -57,5 +59,6 @@ assert log[0]["event"] == "start" and log[0]["version"] == ab.VERSION
 assert st["mode"] == "auto" and st["lux"] == 0.0
 assert abs(max(scr) - lit) <= 1, "faded to the 300 lx level"
 assert scr[-1] == round(c["min"] / 100 * 1000), "dark room ends at the min"
-assert kbd and kbd[-1] == 2, "keyboard level 2 in the dark"
+assert kbd and kbd[-1] == 1, "keyboard level 1 in the dark (2.16.0: kbdMaxLevel 1 by default)"
+assert 2 not in kbd, "auto never sets level 2 by default"
 print("ok")
