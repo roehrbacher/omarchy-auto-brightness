@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "timon.auto-brightness",
   "name": "Auto Brightness",
-  "version": "2.16.0",
+  "version": "2.16.1",
   "author": "Timon Röhrbacher",
   "license": "MIT",
   "description": "Screen and keyboard light follow the laptop's ambient light sensors (no camera)",

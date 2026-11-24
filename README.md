@@ -82,7 +82,7 @@ every write falls back to `brightnessctl`.
     ./install.sh          # script, user service, plugin copy; enables the service
     ./uninstall.sh
 
-Then add `{ "id": "timon.auto-brightness" }` to the bar in `~/.config/omarchy/shell.json`. Right-click: on/off.
+Then add `{ "id": "timon.auto-brightness" }` to the bar in `~/.config/omarchy/shell.json`. Right-click: on/off. No hover tooltip on the icon (like the stock bar icons); the details are in the popup.
 Click: a popup laid out like Omarchy's Bluetooth popup (same 380 px width).
 - **Header:** the on/off switch and a status line (`HeroLines.js`). A state
   that changes what the screen does shows one fixed line (turned off, lid

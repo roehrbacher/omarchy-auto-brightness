@@ -2,6 +2,12 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.16.1
+
+No hover tooltip on the bar icon any more, like the stock Omarchy bar icons;
+the details are in the popup. The popup's on/off switch keeps its tooltip.
+No daemon change.
+
 ## 2.16.0
 
 No more dims in a lit, unchanged room, plus keyboard, wake and replacement fixes.

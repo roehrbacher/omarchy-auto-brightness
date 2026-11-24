@@ -18,7 +18,7 @@ Panel {
   readonly property string runDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
   // The daemon rewrites the state file on every pass. While the popup is
   // open it is re-read on each change (inotify), and the popup touches the
-  // watch file every second so the daemon samples at 10 Hz instead of 2 Hz.
+  // watch file every second so the daemon reads the sensors 4 times a second instead of 2.
   readonly property string stateFile: runDir + "/omarchy-auto-brightness.json"
   readonly property string watchFile: runDir + "/omarchy-auto-brightness.watch"
   property var st: ({ enabled: false, min: 8, max: 100, keyboard: true, mode: "not running" })
@@ -83,23 +83,6 @@ Panel {
   }
   function toggleEnabled() { setSetting("enabled", !st.enabled) }
 
-  function luxValue() {
-    var l = st.luxNow !== undefined && st.luxNow !== null ? st.luxNow : st.lux
-    if (l === undefined || l === null) return null
-    return l < 10 ? Math.round(l * 10) / 10 : Math.round(l)
-  }
-  function luxText() {
-    var l = luxValue()
-    return l === null ? "" : " · " + l + " lx"
-  }
-  function statusLine() {
-    var m = st.mode || ""
-    if (!HeroLines.running(st, nowMs / 1000)) return "Service not running"
-    if (m === "off" || !st.enabled) return "Off" + luxText()
-    if (m === "auto") return "Following the light sensor" + luxText() + " · screen " + st.screen + "%"
-    if (m === "walk-away dim") return "Held by the walk-away lock" + luxText()
-    return "Paused (" + m + ")" + luxText()
-  }
 
   // Hero status line, see HeroLines.js. Like stock Bluetooth/Tailscale:
   // one fixed line for a special state, otherwise lines cycling every 2.8 s.
@@ -148,7 +131,7 @@ Panel {
     onTriggered: { root.nowMs = Date.now(); watchView.setText(String(root.nowMs)) }
   }
   Timer {
-    // Closed: the bar tooltip's state, a file read every 10 s. Open: retry
+    // Closed: the bar icon's on/off colour, a file read every 10 s. Open: retry
     // the file once a second only while it is missing.
     interval: root.opened ? 1000 : 10000; running: true; repeat: true
     onTriggered: { root.nowMs = Date.now(); if (!root.opened || root.stateMissing) stateView.reload() }
@@ -163,11 +146,12 @@ Panel {
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
+  // No hover tooltip on the bar icon (like the stock Omarchy icons): the
+  // details are in the popup. Left-click: popup, right-click: on/off.
   BarIconButton {
     id: button
     bar: root.bar
     text: "󰃡"
-    tooltipText: "Auto brightness " + (root.st.enabled ? "on" : "off") + "\n" + root.statusLine() + "\nRight-click: on/off"
     foreground: root.st.enabled ? (root.bar ? root.bar.barForeground : Color.foreground) : root.dim
     onPressed: function(b) {
       if (b === Qt.RightButton) root.toggleEnabled()
