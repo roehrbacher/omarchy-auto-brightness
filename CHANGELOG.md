@@ -2,6 +2,13 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.15.3
+
+Docs only, no behaviour change. The README now says this is tuned for and only
+tested on the Dell XPS 14, and has a Hardware section for what is generic,
+what is XPS-specific, and which lux thresholds to tune on another laptop.
+The GitHub repo description says the same.
+
 ## 2.15.2
 
 No behaviour change. Comments, docs and tests no longer say when or where the recordings behind the tests were made; they keep what was seen. Two replay tests and their recording have neutral names now: `tests/test_kbd_dips.py`, `tests/test_screen_dips.py`, `tests/sensor-dips.txt`. The glitch replay uses seconds since the recording started instead of clock times.

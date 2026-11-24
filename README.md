@@ -1,9 +1,12 @@
 # Auto Brightness for Omarchy
 
-Screen brightness and keyboard light follow the laptop's **built-in ambient
+Screen brightness and keyboard backlight follow the laptop's **built-in ambient
 light sensors** (Linux iio `als` devices). No camera, no habit learning, no sudo.
-The goal is to behave like a MacBook: slow, smooth fades and no visible jumps,
-even when the XPS 14's HID light sensors send garbage.
+The goal is to behave like a MacBook: slow, smooth fades and no visible jumps.
+
+Tuned for, and only tested on, the Dell XPS 14. Other laptops with a standard
+Linux light sensor will likely run, but the lux thresholds may need adjusting
+(see Hardware).
 
 Changes per version: [CHANGELOG.md](CHANGELOG.md).
 
@@ -32,8 +35,27 @@ Changes per version: [CHANGELOG.md](CHANGELOG.md).
 - Writes through logind's SetBrightness (D-Bus, `brightnessctl` as fallback), so the user service needs no root.
 - Every decision (raw and filtered lux, target, current, mode, trigger) goes to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
 
-`omarchy-auto-brightness sensors` shows what the light sensors expose (on the
-XPS 14 the second one also reports colour temperature and chromaticity x/y).
+## Hardware
+
+It runs on any laptop with a standard Linux iio light sensor (`als`) and a
+backlight written through logind. No root, no camera.
+
+It is only tested on the Dell XPS 14, and several parts are tuned for that
+machine:
+
+- The glitch filters exist because its HID sensors send garbage bursts.
+- The keyboard thresholds (`kbdOnBelow`, `kbdLevel2Below`, `kbdLevel2Exit`,
+  `kbdOffAbove`) were calibrated on its sensors (a lit room reads about
+  16 to 35 lx). `darkLux` and `fullLux` set the dark and bright ends of the
+  screen curve.
+- The keyboard inactivity timeout is the Dell firmware's own
+  (`/sys/class/leds/dell::kbd_backlight/stop_timeout`).
+
+Other laptops will likely run, but may need those lux thresholds adjusted
+in `~/.config/omarchy/auto-brightness.json` (any key of `DEFAULTS` in
+`bin/omarchy-auto-brightness`). `omarchy-auto-brightness sensors` shows
+what a sensor reports (on the XPS 14 the second one also reports colour
+temperature and chromaticity x/y).
 
 Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f" || break; done`.
 

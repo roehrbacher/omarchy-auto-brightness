@@ -88,7 +88,7 @@ DEFAULTS = {
 }
 MAX_LUX = 60000
 STALE_SECONDS = 30  # a state file older than this was left by a daemon that is not running
-VERSION = "2.15.2"
+VERSION = "2.15.3"
 
 
 def load_conf():
