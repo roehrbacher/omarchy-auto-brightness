@@ -2,6 +2,10 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.15.2
+
+No behaviour change. Comments, docs and tests no longer say when or where the recordings behind the tests were made; they keep what was seen. Two replay tests and their recording have neutral names now: `tests/test_kbd_dips.py`, `tests/test_screen_dips.py`, `tests/sensor-dips.txt`. The glitch replay uses seconds since the recording started instead of clock times.
+
 ## 2.15.1
 
 Pre-release checks (poteto review, security audit, implicit state machines review, publishing hygiene). Two bug fixes and docs.
@@ -80,7 +84,7 @@ Quality pass. Two bug fixes, no other behaviour change.
 
 ## 2.10.0
 
-Ignores the light sensors' short drop-outs to exactly 0 lx (seen Nov 3: the screen dimmed and came back in an unchanged room). An exact 0 from a lit sensor only counts once it holds 3.5 s, so real darkness still dims.
+Ignores the light sensors' short drop-outs to exactly 0 lx (seen in a real session: the screen dimmed and came back in an unchanged room). An exact 0 from a lit sensor only counts once it holds 3.5 s, so real darkness still dims.
 
 ## 2.9.0
 
@@ -88,7 +92,7 @@ Smoother fades. Brightness now changes about 60 times a second during a fade (wa
 
 ## 2.8.1
 
-Fixes another full-brightness jump (Oct 30 22:31): when the two sensors glitched one after the other, the sensor still reading the real dark room was ignored and the other one's 43000 lx won. The sensor cross-check now always includes every sensor, and for 90 s after any impossible reading a dark -> sunlight jump is not believed at all.
+Fixes another full-brightness jump seen in a real session: when the two sensors glitched one after the other, the sensor still reading the real dark room was ignored and the other one's 43000 lx won. The sensor cross-check now always includes every sensor, and for 90 s after any impossible reading a dark -> sunlight jump is not believed at all.
 
 ## 2.8.0
 
@@ -121,15 +125,15 @@ with `"appleRamps": false` in the config goes back to the 2.5.0 fades.
 
 ## 2.5.0
 
-Faster dimming. A big drop (sensor covered, lights off) now dims part-way after ~5 s (`dimQuickSeconds` 2.5 s after the 4 s sensor median: half the drop, counted in log-lux) and fully after ~10 s (`dimHoldSeconds` 8, was 12); fades down take 4 s (`dimSeconds`, was 7). Covering the sensor at 300 lx: first dim after 5 s, fully dark after ~14 s (was 14.5 s / ~21 s). Cost: train dips of 4-7 s now dim part-way (in the 23 Oct replay down to ~37 % instead of staying at ~65 %) and come back within ~1.5 s; 2 s dips still do nothing. Brightening and the spike/burst protection are unchanged. The keyboard light waits for the full dim (on after ~13 s of darkness).
+Faster dimming. A big drop (sensor covered, lights off) now dims part-way after ~5 s (`dimQuickSeconds` 2.5 s after the 4 s sensor median: half the drop, counted in log-lux) and fully after ~10 s (`dimHoldSeconds` 8, was 12); fades down take 4 s (`dimSeconds`, was 7). Covering the sensor at 300 lx: first dim after 5 s, fully dark after ~14 s (was 14.5 s / ~21 s). Cost: dips of 4-7 s now dim part-way (in the recorded dip replay down to ~37 % instead of staying at ~65 %) and come back within ~1.5 s; 2 s dips still do nothing. Brightening and the spike/burst protection are unchanged. The keyboard light waits for the full dim (on after ~13 s of darkness).
 
 ## 2.4.0
 
-The screen gets the same wait: a drop to under half the light (`dimBigRatio`) must hold for 12 s (`dimHoldSeconds`, every sample) before the screen dims, so 2-7 s train dips (250 -> 0 lx) no longer fade it 67% -> 1%. Smaller dims and all brightening stay quick. The keyboard wait (`kbdOnSeconds`) is now 3 s on top of that, so a real dark tunnel or room still lights the keys after ~15-17 s.
+The screen gets the same wait: a drop to under half the light (`dimBigRatio`) must hold for 12 s (`dimHoldSeconds`, every sample) before the screen dims, so 2-7 s dips (250 -> 0 lx) no longer fade it 67% -> 1%. Smaller dims and all brightening stay quick. The keyboard wait (`kbdOnSeconds`) is now 3 s on top of that, so a really dark room still lights the keys after ~15-17 s.
 
 ## 2.3.0
 
-Keyboard light like a MacBook: it only turns on (or goes to level 2) after the darkness has lasted 15 s (`kbdOnSeconds`), and turns off as soon as it is bright again. Short 0 lx dips on a train (shadows, tunnels, sensor dropouts of 2-7 s in a 200-400 lx cabin) no longer switch it on.
+Keyboard light like a MacBook: it only turns on (or goes to level 2) after the darkness has lasted 15 s (`kbdOnSeconds`), and turns off as soon as it is bright again. Short 0 lx dips (shadows, sensor dropouts of 2-7 s in a 200-400 lx room) no longer switch it on.
 
 ## 2.2.2
 

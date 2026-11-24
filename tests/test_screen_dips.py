@@ -1,4 +1,4 @@
-"""2.4.0: the 23 Oct train dips (cabin ~210-400 lx, sensors at 0 lx for 2-7 s)
+"""2.4.0: the recorded dips (room ~210-400 lx, sensors at 0 lx for 2-7 s)
 also faded the screen 67% -> 1%. Big drops must now hold dimHoldSeconds before
 the screen dims; a real lasting darkness still dims, brightening stays quick."""
 import ast, importlib.machinery, importlib.util, os
@@ -6,7 +6,7 @@ here = os.path.dirname(__file__)
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
 spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module_from_spec(spec); loader.exec_module(ab)
-SEQ = ast.literal_eval(open(os.path.join(here, "train-2026-10-23.txt")).read())
+SEQ = ast.literal_eval(open(os.path.join(here, "sensor-dips.txt")).read())
 
 def sim(lux_at, secs):
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
@@ -45,7 +45,7 @@ floor = partial_floor(200)
 assert lo >= floor - 1, (lo, floor)
 base = ab.curve_pct(200, C)
 assert end >= base - 1, (end, base)
-print("train replay: screen at least %.0f%% in a dip (part-way floor %.0f%%), back to %.0f%% (curve at 200 lx = %.0f%%)" % (lo, floor, end, base))
+print("dip replay: screen at least %.0f%% in a dip (part-way floor %.0f%%), back to %.0f%% (curve at 200 lx = %.0f%%)" % (lo, floor, end, base))
 lo, first, _ = sim(lambda t: 0.0 if 30 <= t < 32 else 250.0, 90)
 assert first is None, first
 print("0 lx dip of 2 s: screen does not dim")

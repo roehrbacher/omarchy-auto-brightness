@@ -1,4 +1,4 @@
-"""2.10.0: replay of Nov 3 12:01-12:05: both sensors read ~106 lx but keep
+"""2.10.0: replay of a logged ~4 min: both sensors read ~106 lx but keep
 dropping to exactly 0 for 0.5-2.5 s, sometimes both at once. 2.9.0 dimmed
 part-way (59% -> 32%) and came back. Real darkness must still dim."""
 import importlib.machinery, importlib.util, os
@@ -31,7 +31,7 @@ def dropouts(t):
 lo0, _, _ = sim(lambda t: (106, 106), 200)
 lo, cur, ctl = sim(dropouts, 200)
 assert lo >= lo0 - 1, (lo, lo0)
-print("Nov 3 drop-out pattern for 170 s: no dim (lowest %.0f%%, steady %.0f%%)" % (lo, lo0))
+print("Logged drop-out pattern for 170 s: no dim (lowest %.0f%%, steady %.0f%%)" % (lo, lo0))
 lo, cur, ctl = sim(lambda t: (106, 106) if t < 30 else (0, 0), 90)
 assert cur < 10 and ctl.stable == 0, (cur, ctl.stable)
 print("real 106 -> 0 lx on both sensors: still dims to %.0f%%" % cur)

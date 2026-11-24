@@ -28,7 +28,7 @@ def run(secs, lux, no_dim=False, manual=None, label=""):
     print(f"t={state['t']:6.1f}s  screen={state['screen']:.0f}% target={ctl.target():.0f}% kbd={state['kbd']}")
     return state["screen"]
 
-s = run(6, 200, label="office 200 lx")
+s = run(6, 200, label="lit room 200 lx")
 assert abs(s - ab.curve_pct(200, c)) < 1
 t0 = state["t"]; s = run(3, lambda t: 2 if t - t0 < 1.5 else 200, label="hand over sensor for 1.5 s (ignored)")
 assert abs(s - ab.curve_pct(200, c)) < 1
@@ -82,10 +82,10 @@ kb(1.5); assert k.kbd_want == 2, "1-2 lx keeps 2 (hysteresis)"
 kb(3); assert k.kbd_want == 1, "above 2 lx -> 1"
 kb(1.5); assert k.kbd_want == 1, "1.5 lx from level 1 stays 1"
 before = len(seen); kb(3.5); assert len(seen) == before, "no write without a threshold crossing (his key press sticks)"
-kb(0); kb(19); assert k.kbd_want == 0, "covered (2) then lit room 19 lx -> off (the 16:37 case)"
+kb(0); kb(19); assert k.kbd_want == 0, "covered (2) then lit room 19 lx -> off (a real session)"
 print("simulation ok")
 
-# XPS HID sensor bursts (logged 22 Oct): dark room, two sensors alternately
+# XPS HID sensor bursts (from a real log): dark room, two sensors alternately
 # report ~40000 lx for 0.5-1.5 s, overlapping to >2 s of max(). Must be ignored.
 f = ab.SensorFilter(2, c["sensorMedianSeconds"])
 ctl2 = ab.Controller(c); scr = 1.0; peak = 0
@@ -110,7 +110,7 @@ for i in range(100):
 assert ctl3.stable == 300.0 and t < 7
 print("sensor filter OK")
 
-# Dark-end wobble (XPS log 22 Oct 23:13): sensor flips 0 <-> 1 lx every few s.
+# Dark-end wobble (from a real XPS log): sensor flips 0 <-> 1 lx every few s.
 assert abs(ab.curve_pct(1, c) - ab.curve_pct(0, c)) < 1, "no step between 0 and 1 lx"
 f = ab.SensorFilter(2, c["sensorMedianSeconds"]); ctl4 = ab.Controller(c); scr = 1.0; lo = hi = None
 for i in range(1200):

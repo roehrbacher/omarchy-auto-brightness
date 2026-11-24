@@ -1,4 +1,4 @@
-"""2.7.0: Oct 29 22:19 resume in a dark room. The sensor first reported a stale
+"""2.7.0: a logged resume in a dark room. The sensor first reported a stale
 4 lx, then 0 lx. 2.6.1 faded 63% -> 19% -> 1% over ~18 s and never lit the
 keyboard (the part-way dim 4 -> 1.2 lx stayed "staged" because 1.2 -> 0 lx is
 inside the 2 lx deadband). Now: dark within ~3 s, keyboard on at once."""

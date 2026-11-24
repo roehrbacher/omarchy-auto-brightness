@@ -1,4 +1,4 @@
-"""2.8.0: replay of Oct 30 21:34-22:22 (dark room, 5x screen to 100 %).
+"""2.8.0: replay of a logged ~50 min (dark room, 5x screen to 100 %).
 Sensor 0 alone sends HID garbage for >10 s (in-range ~43000 lx mixed with
 impossible 170063 / 24318 lx) while sensor 1 keeps reading 2 lx. 2.7.0 took
 the brighter median and accepted the 'sustained jump' after 10 s."""

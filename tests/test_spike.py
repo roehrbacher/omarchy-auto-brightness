@@ -1,4 +1,4 @@
-"""2.2.2: the logged 23:50 burst (dark room, 0 lx -> 41008 lx for 6 s -> 1 lx)
+"""2.2.2: a logged burst (dark room, 0 lx -> 41008 lx for 6 s -> 1 lx)
 must not change the brightness; a real sustained 0 -> 500 lx change must."""
 import importlib.machinery, importlib.util, os
 p = os.path.join(os.path.dirname(__file__), "..", "bin", "omarchy-auto-brightness")

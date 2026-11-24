@@ -49,10 +49,10 @@ DEFAULTS = {
     "kbdOffAbove": 12,     # lux: off above this
     "kbdLowBatteryPercent": 15,  # 2.15.0: on battery below this %, auto sets the keyboard to level 1 at most (0 = off)
     "kbdOnSeconds": 3.0,   # darker keyboard level only after the darkness held this long; big drops
-                           # already wait dimHoldSeconds, so a 250 -> 0 lx tunnel lights it after ~15 s
+                           # already wait dimHoldSeconds, so a lasting 250 -> 0 lx drop lights it after ~15 s
     "dimHoldSeconds": 8.0,   # a drop to under half the light must hold this long before the screen dims fully
     "dimQuickSeconds": 2.5,  # 2.5.0: ...but after this long it already dims part-way (half the drop, in
-                             # log-lux), so covering the sensor shows a reaction in ~6.5 s; short train dips
+                             # log-lux), so covering the sensor shows a reaction in ~6.5 s; short dips
                              # (2-7 s) dim only part-way and come back in 1.5 s (Android: darkening 8 s)
     "dimBigRatio": 0.5,
     "brightenSeconds": 1.5,  # 2.6.0: fastest brighten (2x or more); see ramp_seconds()
@@ -88,7 +88,7 @@ DEFAULTS = {
 }
 MAX_LUX = 60000
 STALE_SECONDS = 30  # a state file older than this was left by a daemon that is not running
-VERSION = "2.15.1"
+VERSION = "2.15.2"
 
 
 def load_conf():
@@ -212,7 +212,7 @@ class SensorFilter:
                 self.bad_until[i] = t + q
                 h.clear()
                 v = None
-            # 2.10.0: Nov 3 11:15-12:03 both XPS HID sensors kept dropping to
+            # 2.10.0: in a real session both XPS HID sensors kept dropping to
             # exactly 0 for 0.5-2.5 s at a time (106000 raw -> 0 -> 106000)
             # in an unchanged room; the lower median then read 0 and the
             # screen dimmed part-way and came back. A lit sensor's exact 0 is
@@ -242,7 +242,7 @@ class SensorFilter:
         vals = [self.medians[i] for i in ok]
         best = max(vals) if vals else None
         # 2.8.1: the cross-sensor check looks at EVERY sensor with a median,
-        # quarantined or not. On Oct 30 22:31 sensor1's quarantine ran out
+        # quarantined or not. In a logged glitch sensor1's quarantine ran out
         # first while sensor0 (honestly reading 1 lx) was still quarantined,
         # so sensor1's in-range 43021 lx burst won alone and was accepted.
         allv = [m for m in self.medians if m is not None]
@@ -390,7 +390,7 @@ class Controller:
             self.ev(t, f"sustained jump accepted after {t - run[0][0]:.0f}s")
         else:
             win = [w for w in self.window if not w[3]]
-            # big drops (train tunnels/shadows: 250 -> 0 lx for 2-7 s) dim the
+            # big drops (shadows, sensor drop-outs: 250 -> 0 lx for 2-7 s) dim the
             # screen only once every sample held them for dimHoldSeconds;
             # brightening and small dims stay quick
             ratio = c["dimBigRatio"]
@@ -536,7 +536,7 @@ class Controller:
             want = self.kbd_want  # dead zone: keep
         cur = self.kbd_want if self.kbd_want is not None else 0
         # 2.5.0: the quick part-way screen dim is not real darkness yet: the
-        # keyboard light waits for the full dim (train dips stay unlit).
+        # keyboard light waits for the full dim (short dips stay unlit).
         if self.dim_staged and want is not None and want > cur:
             self.kbd_dark = None
             return self.kbd_want
