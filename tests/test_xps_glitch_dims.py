@@ -19,6 +19,7 @@ The logged manual key presses are replayed too.
 None of the three may move the screen or the keyboard now.
 AB_DAEMON=<path> runs it against another version (to see the old dims)."""
 import importlib.machinery, importlib.util, json, os
+import two_sensor
 here = os.path.dirname(os.path.abspath(__file__))
 p = os.environ.get("AB_DAEMON") or os.path.join(here, "..", "bin", "omarchy-auto-brightness")
 loader = importlib.machinery.SourceFileLoader("ab", p)
@@ -57,13 +58,13 @@ def samples(lines):
 def replay(part):
     lines = [r for r in REC if r["part"] == part]
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"], c)
+    ctl, filt = ab.Controller(c), two_sensor.make_filter(ab, c)
     cur, kbd = lines[0]["current"], 0
     ctl.kbd_want = 0
     manual = [(r["t"], r["current"]) for r in lines if r["event"].startswith("manual change")]
     trace = []
     for t, v in samples(lines):
-        ctl.feed_lux(t, filt.feed(t, v))
+        ctl.feed_lux(t, two_sensor.feed(filt, t, v))
         while manual and manual[0][0] <= t:
             cur = manual.pop(0)[1]; ctl.manual(t, cur, "day")
         # 60 Hz fade writes between the 2 Hz samples

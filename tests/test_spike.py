@@ -7,11 +7,11 @@ spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module
 
 def sim(seq, secs):
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"])
+    ctl, filt = ab.Controller(c), ab.SensorFilter(c["sensorMedianSeconds"])
     cur, t, first, changed = 1.0, 0.0, None, []
     while t < secs:
         v = seq(t)
-        ctl.feed_lux(t, filt.feed(t, [v, v]))  # both sensors report the burst
+        ctl.feed_lux(t, filt.feed(t, v))  # both sensors report the burst
         pct = ctl.step(t, cur)
         if pct is not None:
             cur = pct

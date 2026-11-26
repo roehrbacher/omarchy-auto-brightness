@@ -9,7 +9,13 @@ Restart=on-failure
 RestartSec=10
 Nice=10
 CPUQuota=5%
+# 2.16.3: 64 MB of RAM and no swap. With swap allowed, the old cap only
+# limited RAM, so a run grew to 960 MB with 796 MB in swap; now anything
+# over the cap is killed (a helper process) or restarts the daemon.
+MemoryHigh=48M
 MemoryMax=64M
+MemorySwapMax=0
+OOMPolicy=continue
 NoNewPrivileges=yes
 
 [Install]

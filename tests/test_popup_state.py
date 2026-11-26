@@ -23,10 +23,10 @@ def dev(name, maxv, cur):
     open(d + "/max_brightness", "w").write(f"{maxv}\n"); open(d + "/brightness", "w").write(f"{cur}\n")
     return d
 bl, kb = dev("intel_backlight", 1000, 600), dev("dell::kbd_backlight", 2, 0)
-s0, s1 = tmp + "/als0", tmp + "/als1"
+s0 = tmp + "/als0"
 def sensor(f, lux): open(f, "w").write(f"{lux}\n")
-def room(lux): sensor(s0, lux); sensor(s1, lux)
-ab.sensors = lambda: [(s0, 1.0), (s1, 1.0)]
+def room(lux): sensor(s0, lux)
+ab.sensor = lambda: (s0, 1.0)
 ab.find_dev = lambda cls, pat: bl if cls == "backlight" else kb
 ab.Dev.set = lambda self, raw: open(self.path + "/brightness", "w").write(f"{int(raw)}\n")
 ab.lid_closed = lambda: False
@@ -72,8 +72,8 @@ except KeyboardInterrupt:
 
 def at(t0, t1): return [(t, d) for t, d in states if t0 < t <= t1]  # states written after the event at t0
 # live lux: next sample after the room change; the settled lux still 200 for 2 s
-first = at(20, 30)[0]
-assert first[0] - 20 <= 0.5 and first[1]["luxNow"] == 40, first
+first = next((x for x in at(20, 30) if x[1]["luxNow"] == 40), None)
+assert first and first[0] - 20 <= 1.1, first
 assert all(d["lux"] == 200 for t, d in at(20, 22)), at(20, 22)[-1]
 settled = next(t for t, d in at(20, 40) if d["lux"] != 200)
 print(f"room 200 -> 40 lx: luxNow 40 after {first[0] - 20:.2f} s, settled lux moves after {settled - 20:.1f} s")
@@ -82,11 +82,11 @@ g1 = at(40, 41); g2 = at(80, 81)
 assert all(d["luxNow"] == 40 for t, d in g1 + g2), [d["luxNow"] for t, d in g1 + g2]
 assert all("glitch" not in d and "restless" not in d for t, d in states)
 print("170063 lx (impossible) and a 43000 lx one-sensor burst: luxNow stays 40, nothing about it in the state")
-# cadence: 2 Hz closed, 4 Hz with the popup open (not fading)
+# loop idle 0.25 s closed and with the popup open (not fading); the sensor is 1 Hz
 idle_closed = {dt for t, dt in sleeps if 60 <= t < 79}
 idle_open = {dt for t, dt in sleeps if 125 <= t < 139}
-assert idle_closed == {0.5} and idle_open == {0.25}, (idle_closed, idle_open)
-print("sampling: 0.5 s closed, 0.25 s with the popup open (2.16.0: sensors at most 4 Hz)")
+assert idle_closed == {0.25} and idle_open == {0.25}, (idle_closed, idle_open)
+print("loop idle: 0.25 s closed and with the popup open (sensor 1 Hz, 2.16.5)")
 # preview: min 8 -> 40 in the dark room is on screen within 0.5 s, fadeTo shows it
 screen_at = lambda t: next(d["screen"] for tt, d in states if tt >= t)
 assert screen_at(139.9) <= 9, screen_at(139.9)

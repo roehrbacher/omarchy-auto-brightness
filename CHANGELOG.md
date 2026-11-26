@@ -2,6 +2,48 @@
 
 Newest first. The version is `manifest.json` `version`; each commit subject starts with it.
 
+## 2.16.6
+
+The log is quiet by default. A debug log still has the detailed history when you want it.
+
+- **Default log: faults and state only.** `decisions.jsonl` no longer stores every light reading, heartbeat or fade. Light readings show when you are at the laptop and when the lights are on, so they stay out of the log unless you ask. What remains: errors, sensor faults (an impossible-value quarantine, or a stuck-zero episode), and state changes (start, stop, mode). A stuck-zero episode is a run of exact 0 lx after a real reading, not a lights-off that went through 1 to 5 lx first; it is noted once after about 10 s and once when it ends.
+- **Debug log, opt-in.** `omarchy-auto-brightness debug-log on` (or `"debugLog": true` in the settings file) writes the previous detailed log: every decision, with lux, heartbeats, fades, keyboard and memory. `debug-log off` goes back. The file is still capped at 1 MB with one older copy, either way.
+- Proof: `tests/test_debug_log.py`. The default writes no per-reading lines; debug-on writes them; the size cap still rotates.
+
+## 2.16.5
+
+The light sensor is read once a second, so the screen no longer goes dark for minutes in a lit room.
+
+- **Read once a second, always.** 2.16.0 read twice a second (four times with the popup open). On this XPS that left under 0.45 s between the end of one read and the start of the next, and the sensor firmware then answered 0 lx and kept answering 0 until a longer gap. Measured: 2 Hz went to 0 and stayed there (91 to 100 % zeros); 1 Hz was 0 % zeros and recovered from a stuck 0 on the next read. The daemon now reads once a second, including with the popup open and the fresh read on wake, and never starts a read until 0.9 s after the last one ended (`sampleSeconds` 1, `popupSampleSeconds` 1, `sampleMinGapSeconds` 0.9). The 2.16.4 zero rules stay as a safety net. The 4 s median still has about four samples. Live lux in the popup updates once a second, and a lamps-on may be about half a second slower. The loop still wakes every 0.25 s when not fading, so sliders stay live.
+- Proof: `tests/test_sensor_read_gap.py` checks the gap never goes under 0.9 s at 1 Hz, with the popup interval, and after a wake flush. `tests/test_sensor_cadence.py` checks 1 Hz reads during a fade, with brightness writes still at 60 Hz. All earlier fixtures still hold; the three real lights-off replays dim as before.
+
+## 2.16.4
+
+No more dims in a dim, unchanged room, and the daemon reads one light sensor.
+
+- **An exact 0 lx never beats a non-zero reading, at any light level.** Before, zeros were only distrusted above 20 lx, so in a 6 to 20 lx room a dropout counted at once or the other sensor's 0.0 won while the first was ignored after an impossible value: the screen went to 1 % for 28 to 97 s, or dipped for 4 s, with the keyboard on. Now zeros wait `zeroDropoutSeconds` (60 s), unless a faint reading (1 to 5 lx, `faintLux`, was `zeroDropoutLux` 20) came just before: that is a real lights-off and still counts after `zeroTrustSeconds` (3.5 s). A zero with nothing before it (start, resume) is just the reading. Darkness that reads only exact 0 lx from the first sample, and a sensor covered in a lit room, take about 63 s to the first dim.
+- **One sensor, read once.** The XPS lists the same chip twice: a plain light sensor and a colour view (colour temperature, chromaticity) that mostly reads 0.0 and often agrees with the plain one to the lux. The daemon now reads only the plain one, each time once, so the sensor hub gets half the requests and the log's `raw`, `median` and `readMs` are single numbers. `omarchy-auto-brightness sensors` shows the one it reads.
+- **Removed what only existed for the second sensor:** the brighter-sensor vote, the "sensors disagree, using the lower" rule, the quarantined-lit-sensor override from 2.16.2 and its test, and the per-sensor lists in the filter and reader. The impossible-value quarantine (30 s, screen holds) and the 90 s glitch-episode rule stay.
+- **Costs, measured on the replays:** after an impossible value the sensor is ignored for 30 s with no second sensor to carry the room, so lamps switched on during that time are followed up to 30 s late (the lights-off replay with a burst: 10 s instead of 5 s). An in-range garbage burst of over 10 s with no impossible value would no longer be vetoed by the other sensor. Waking in a dark room when the first reading is a stale 1 to 5 lx takes about 15 s to go dark (was 3 s) because the 0 after it now waits 3.5 s.
+- Proof: `tests/test_xps_glitch_dims_3.py` (the 15:48, 15:53 and 16:00 glitches and the lamps-on) holds all three dims and follows the lamps in 4 s; `--old` with a 2.16.3 copy reproduces the logged dims. The six earlier lit-room glitches still hold; the three real lights-off replays dim, light the keyboard and reach 1 % exactly as before. `tests/test_sensor_choice.py` checks the plain sensor is chosen in any device order and that only its file is read; `tests/test_zero_dropout.py` checks the zero waits at 300, 20, 16, 7 and 6 lx and at 5 to 1 lx.
+
+## 2.16.3
+
+The service can no longer swell to almost 1 GB.
+
+- **No swap for the service.** One long 2.16.1 run ended at a 960 MB memory peak with 796 MB in swap. The unit's `MemoryMax=64M` only capped RAM, so everything over it went to swap instead. The unit now sets `MemorySwapMax=0` and `MemoryHigh=48M` next to `MemoryMax=64M`. If anything grows past the cap now, the kernel kills it: a helper process like `hyprctl` gets killed and the daemon keeps running (`OOMPolicy=continue`); if it's the daemon, systemd restarts it after 10 s. A normal run uses about 20 MB.
+- **Memory in the decision log.** Every decision line carries `memKB`: the daemon's RSS and swap, and the whole service's RAM and swap (helpers included). Growth shows up with its time and trigger. On the XPS, short soaks of fades, sensor reads, D-Bus writes and state writes all stayed flat, so what grew in that run is still open.
+- **A stuck `brightnessctl` can't stall the loop.** The fallback after a failed logind call gives up after 5 s (it had no timeout).
+- `tests/test_memory_guard.py`. Also new: `tests/test_xps_glitch_dims_3.py` with `tests/xps-glitch-dims-3.jsonl`. It replays three dim-room glitches (about 6 to 20 lx) that this version still lets through: a 3 s zero on sensor0, an impossible-value quarantine that left only sensor1's 0.0, and six minutes of bursts that sent the screen to 1 % three times. It also replays a real light change, lamps switched on (6 to 30 lx in one step), which must be followed within about 4 s. By default it checks that the replay matches the log. `--fixed` asserts the glitches are held, for when the sensor-side fix is decided. No sensor-side change in this version.
+
+## 2.16.2
+
+The screen and keyboard no longer go dark for a few seconds in a lit room.
+
+- **Longer sensor dropouts held.** Both XPS sensors sometimes report exactly 0 lx for 27 to 45 s in a lit, unchanged room (100 to 260 lx). 2.16.1 believed zeros on their own after 20 s, so these dimmed the screen part-way or to 1 % and lit the keyboard, then sprang back. Exact zeros straight from a lit room now count only after 60 s (`zeroDropoutSeconds`). A real lights-off is unchanged: every one in the log read 1 to 5 lx first (the screen lights the room a little), so it still dims after about 3.5 s. Only darkness that reads exactly 0 lx on both sensors from the first sample waits longer: about 63 s to the first dim (was about 23 s).
+- **A quarantined lit sensor beats a zero.** After one impossible value, a sensor is ignored for 30 s even though it keeps reading the room. When it read 259 lx while the other sensor read 0, 2.16.1 used the 0 and dimmed a 251 lx room to 37 %. Now its lit reading wins over an exact 0.
+- Proof: `tests/test_xps_glitch_dims_2.py` replays six logged dims from `tests/xps-glitch-dims-2.jsonl` (2.16.1: 1 %, 1 %, 37 %, 37 %, 1 %, 1 %, keyboard on in four; now all held, keyboard off) and three logged real lights-off events (same dim, 1 % and keyboard timing as before). `tests/test_quarantined_lit.py` covers the quarantine case.
+
 ## 2.16.1
 
 No hover tooltip on the bar icon any more, like the stock Omarchy bar icons;

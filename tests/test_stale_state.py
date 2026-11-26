@@ -17,7 +17,7 @@ ab.replace_upstream = lambda keyboard: []  # 2.16.0: never touch the real system
 d = tmp + "/intel_backlight"; os.makedirs(d)
 open(d + "/max_brightness", "w").write("1000\n"); open(d + "/brightness", "w").write("500\n")
 s0 = tmp + "/als0"; open(s0, "w").write("300\n")
-ab.sensors = lambda: [(s0, 1.0)]
+ab.sensor = lambda: (s0, 1.0)
 ab.find_dev = lambda cls, pat: d if cls == "backlight" else None
 ab.Dev.set = lambda self, raw: open(self.path + "/brightness", "w").write(f"{int(raw)}\n")
 ab.lid_closed = lambda: False; ab.screen_off = lambda: False; ab.fullscreen_video = lambda: False

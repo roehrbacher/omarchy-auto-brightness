@@ -10,7 +10,7 @@ def bump(pct):
     return fn
 
 for pct in (1, -1, 5):
-    lp = loop_harness.Loop(lux=300, screen=500)
+    lp = loop_harness.Loop(lux=300, screen=500, conf={"debugLog": True})
     lp.run(70, {20: lambda lp: lp.__setattr__("before", lp.screen()), 30: bump(pct)})
     want = lp.before + round(pct / 100 * 1000)
     after = [v for v, t in lp.screen_writes() if t > 30]
@@ -18,7 +18,7 @@ for pct in (1, -1, 5):
     print(f"{pct:+d}% at 300 lx: {lp.before} -> {want} raw, writes after it {after}, end {lp.screen()}, logged: {manual[0]['event'] if manual else None}")
     assert manual and lp.screen() == want and not after, (pct, lp.screen(), after)
 # our own fade writes are never taken for a key press
-lp = loop_harness.Loop(lux=300, screen=200).run(40, {10: lambda lp: lp.room(3000)})
+lp = loop_harness.Loop(lux=300, screen=200, conf={"debugLog": True}).run(40, {10: lambda lp: lp.room(3000)})
 assert not [r for r in lp.log() if "manual change" in r.get("event", "")], "own fade counted as manual"
 print("a 1 % step sticks (both ways); the daemon's own fades never count as a key press")
 print("ok")

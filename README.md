@@ -19,17 +19,18 @@ Changes per version: [CHANGELOG.md](CHANGELOG.md).
   A key press while the screen is only part-way dimmed accepts the darkness
   it was heading for, so the full dim does not undo your change. Any change
   of at least 0.5 % (2 raw steps) counts, so a 1 % nudge sticks too.
-- **Reaction:** a light change must last 2 s (up to 4 s when dimming in the dark) after a 4 s per-sensor median. Changes under 12 % or under 2 lx are ignored. A drop to under half the light dims part-way first and fully only after it held 8 s, so short dips and shadows do little. Covering the sensor at 300 lx: first dim after about 6.5 s, fully dark after about 20 s.
+- **Reaction:** a light change must last 2 s (up to 4 s when dimming in the dark) after a 4 s median. Changes under 12 % or under 2 lx are ignored. A drop to under half the light dims part-way first and fully only after it held 8 s, so short dips and shadows do little. Covering the sensor at 300 lx (it reads exactly 0 lx, like a dropout): first dim after about 63 s.
 - **Fades:** the length follows the size of the change, as in Apple's patent US 2012/0019493. Brightening 2x or more takes 1.5 s, 1.5x takes 5 s. Dimming up to 3x takes 5 s, 10x or more takes 10 s. Brightness is written 60 times a second in even perceived (log) steps.
-- **Sensor glitches:** each sensor's readings go through a 4 s median weighted by time, and the brighter sensor wins, so a hand over one sensor does nothing. An exact 0 lx is what the XPS sensors report when a read gets no answer, so
-  it is never believed while any sensor still reads a lit room, and on its own
-  only after 20 s (logged dropouts last up to about 17 s). When a faint reading
-  (1 to 20 lx) came first, as when the lights go off or a hand covers both
-  sensors, zeros count after 3.5 s as before. When every sensor is ignored for
-  an impossible reading, the screen holds. After a false dim, a jump back to
-  the light from before (within 2 min) is followed at once, not held 10 s. A reading above 60000 lx ignores that sensor for 30 s. When one sensor says sunlight and the other says dark, the lower one is used. A jump from dark to sunlight must hold 10 s, and is not believed at all for 90 s after an impossible reading.
+- **Sensor glitches:** the sensor's readings go through a 4 s median weighted by time. An exact 0 lx is what the XPS sensor reports when a read gets no answer, so
+  it never beats a non-zero reading, at any light level: it counts only after 60 s
+  (a safety net; the 1 Hz read already stops the sensor sticking at 0). When a faint reading (1 to 5 lx) came
+  first, as when the lights go off, zeros count after 3.5 s. A reading above
+  60000 lx ignores the sensor for 30 s and the screen holds. After a false dim,
+  a jump back to the light from before (within 2 min) is followed at once, not
+  held 10 s. A jump from dark to sunlight must hold 10 s, and is not believed at
+  all for 90 s after an impossible reading.
 - **Resume, lid open and screen wake:** the sensor is read fresh and followed at once for 3 s, with 0.4 s fades, like a MacBook display that comes back at the level the room asks for (Apple patents US 8,743,161 and US 11,755,143, "luminescence shock avoidance": the light sensor is read before the display turns on). Waking in a dark room (under 10 lx, `wakeDarkLux`) still dims at once, but brightens with the normal fade, so dark-adapted eyes get no flash.
-- **Sensor reads:** twice a second (4 times with the popup open) in a background thread, so a slow read (the XPS sensors take 0.2 to 0.5 s each) never stalls a fade. Fades write 60 times a second.
+- **Sensor reads:** once a second, also with the popup open, in a background thread, and never sooner than 0.9 s after the last read ended. Faster polling made the XPS sensor firmware stick at 0 lx until a longer gap. A slow read (about 0.1 s) never stalls a fade. Fades write 60 times a second.
 - **Replaces other automatic brightness**, the way an Omarchy plugin with `clonedFrom` replaces a stock one: while the service runs it stops `omarchy-brightness-auto.service` (omacom/omarchy#8025), `wluma.service` and, with the keyboard switch on, `omarchy-brightness-keyboard-auto.service` (omacom/omarchy#14557), and sets Omarchy's own "keyboard backlight auto off" toggle (omacom/omarchy#13148). Stopped for this session only, never disabled, masked or edited; no sudo. `omarchy-auto-brightness restore-replaced` (run by `uninstall.sh`) starts them again and removes the toggle, if this plugin set it.
 - **Never dims during a fullscreen video** (fullscreen window and an MPRIS player playing).
 - **Keyboard light (Apple-style, native levels only):** level 1 below 4 lx,
@@ -46,7 +47,8 @@ Changes per version: [CHANGELOG.md](CHANGELOG.md).
 - **Low battery:** only matters with `kbdMaxLevel` 2. On battery below 15 % (`kbdLowBatteryPercent`, 0 = off) auto then sets the keyboard backlight to level 1 at most, and lowers its own level 2 to 1. A key press to 2 still sticks; the charger lifts the cap. The battery is read from `/sys/class/power_supply` every 10 s (peripheral batteries are ignored). 15 % because Omarchy has no percentage-based power saver: it switches power profiles on plugging in or unplugging, and only warns at 10 %.
 - Keeps adjusting on the lock screen. Holds only while the lid is closed, the screen is blanked (DPMS off), or a walk-away lock has dimmed it (any tool that creates `$XDG_RUNTIME_DIR/omarchy-walk-away.dimmed`; none ships with this plugin).
 - Writes through logind's SetBrightness (D-Bus, `brightnessctl` as fallback), so the user service needs no root.
-- Every decision (raw and filtered lux, target, current, mode, trigger) goes to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`, capped at 1 MB with one older copy.
+- **Log:** by default only errors, sensor faults (a quarantine or a stuck-zero episode) and state changes (start, stop, mode) go to `~/.local/state/omarchy-auto-brightness/decisions.jsonl`. Light readings are not stored: they show when you are at the laptop and when the lights are on. `omarchy-auto-brightness debug-log on` turns on the detailed log (every decision, including lux, heartbeats and fades). `debug-log off` goes back. The file is capped at 1 MB either way, with one older copy.
+- The service gets 64 MB of RAM and no swap; past that the kernel kills it and systemd restarts it.
 
 ## Hardware
 
@@ -67,8 +69,8 @@ machine:
 Other laptops will likely run, but may need those lux thresholds adjusted
 in `~/.config/omarchy/auto-brightness.json` (any key of `DEFAULTS` in
 `bin/omarchy-auto-brightness`). `omarchy-auto-brightness sensors` shows
-what a sensor reports (on the XPS 14 the second one also reports colour
-temperature and chromaticity x/y).
+which light sensor it reads. The XPS 14 lists the same chip twice (plain, and a
+colour view with colour temperature and chromaticity); only the plain one is read.
 
 Tests (no hardware, temp state only): `for f in tests/test_*.py; do python3 "$f" || break; done`.
 
@@ -106,9 +108,9 @@ The lux in the popup is the live reading (`luxNow`: this sample, with the
 glitch rules but without the 4 s median). The screen still follows the
 smoothed value (`lux`). While the popup is open it re-reads the state file
 on every change and touches `$XDG_RUNTIME_DIR/omarchy-auto-brightness.watch`,
-so the daemon reads the sensors 4 times a second instead of 2; closed, it reads the file every 10 s.
+so the daemon knows the popup is open; the sensor is still read once a second. Closed, the popup reads the state file every 10 s.
 
-CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off|set kbd-max 2|kbd-level 0|restore-replaced`.
+CLI: `omarchy-auto-brightness status|on|off|lux|set min 10|set max 90|set keyboard off|set kbd-max 2|kbd-level 0|debug-log on|restore-replaced`.
 Settings: `~/.config/omarchy/auto-brightness.json`. Besides `enabled`, `min`,
 `max` and `keyboard` it takes any key of `DEFAULTS` at the top of
 `bin/omarchy-auto-brightness`, for example `gamma`, `fullLux`, `kbdOnBelow`,

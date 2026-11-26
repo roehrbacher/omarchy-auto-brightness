@@ -9,15 +9,15 @@ No camera, no habit learning. Works like a MacBook (details: README.md):
   - fades 1.5-5 s up and 5-10 s down, sized by the change (Apple ramps); a big
     drop (sensor covered, lights off) dims part-way first, fully after 8 s
   - ignores light changes under 12 % / 2 lx and anything shorter than ~2 s;
-    filters the XPS HID sensors' bursts, 0 lx drop-outs and impossible values;
-    the brighter of the two sensors wins
+    filters the XPS HID sensor's bursts, 0 lx drop-outs and impossible values;
+    reads one light sensor (the plain one, not the colour view of it)
   - never dims while a fullscreen video plays
   - keyboard light: native levels only, auto uses level 1 at most (kbdMaxLevel,
     like macOS's ~25 % keys in the dark), on below 4 lx once the darkness held,
     off above 12 lx at once; a key press sticks, also across a lock blank; the
     Dell firmware's own inactivity timeout turns it off and the next key press
     turns it back on (we never fight that)
-  - sensors read 2x a second (4x with the popup open) in a background thread,
+  - sensors read once a second in a background thread,
     brightness written 60x a second while fading
   - replaces other automatic brightness while it runs (omarchy-brightness-auto,
     wluma, Omarchy's keyboard auto): stopped for the session, never disabled
@@ -28,10 +28,11 @@ No camera, no habit learning. Works like a MacBook (details: README.md):
   omarchy-auto-brightness set KEY VAL  min|max|keyboard|kbd-max (highest keyboard level auto sets, default 1)
   omarchy-auto-brightness kbd-level N  keyboard light to 0/1/2 now (auto may change it again later)
   omarchy-auto-brightness lux          print current lux once
-  omarchy-auto-brightness sensors      what the light sensors expose (colour?)
+  omarchy-auto-brightness sensors      which light sensor it reads
+  omarchy-auto-brightness debug-log on|off  detailed decision log (off by default)
   omarchy-auto-brightness restore-replaced  start the auto-brightness services it stopped (uninstall)
 """
-import datetime, fcntl, glob, json, math, os, shutil, subprocess, sys, time
+import datetime, fcntl, glob, json, math, os, shutil, signal, subprocess, sys, time
 
 HOME = os.environ.get("HOME", "")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME", HOME + "/.config"), "omarchy", "auto-brightness.json")
@@ -87,13 +88,14 @@ DEFAULTS = {
     "darkLux": 2.0,        # the curve treats 0..2 lx as fully dark (no 12-point step at 1 lx)
     "settleSeconds": 2.0,  # a change must last this long (spikes, shadows)
     "offsetResetRatio": 2.5,
-    "zeroTrustSeconds": 3.5,   # 2.10.0: an exact 0 lx from a lit sensor is a HID dropout until it held this long (seen: up to 2.5 s)
-    "zeroDropoutLux": 20.0,    # ...and only counts as a dropout when that sensor's median was above this
-    "zeroDropoutSeconds": 20.0,  # 2.16.0: ...but zeros on their own wait this long (logged dropouts: up to ~17 s
-                                 # on both sensors at once in a 500-1100 lx room); zeroTrustSeconds applies
-                                 # once a faint real reading (0 < lux <= zeroDropoutLux) shows it is getting dark
+    "zeroTrustSeconds": 3.5,   # 2.10.0: an exact 0 lx is a HID dropout until it held this long (seen: up to 2.5 s)...
+    "faintLux": 5.0,           # 2.16.4: ...when a faint real reading (0 < lux <= this) came just before: lights off.
+                               # Every logged real lights-off read 1-5 lx first (the screen lights the room a little)
+    "zeroDropoutSeconds": 60.0,  # 2.16.0: otherwise zeros wait this long, at any light level (2.16.4: also below 20 lx,
+                                 # where 2.16.3 believed them at once: a 16 lx room dimmed to 1 % for 40 s).
+                                 # 2.16.2: was 20 s; logged dropouts in a lit room lasted 27-45 s
     "zeroDarkSeconds": 10.0,     # ...a faint reading this long before the zeros started still counts
-    "sensorMedianSeconds": 4.0,  # per-sensor median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
+    "sensorMedianSeconds": 4.0,  # median: drops the XPS HID sensors' bogus 1-2 s bursts (0 -> 40000 lx)
     "jumpSeconds": 10.0,   # an implausible jump (dark -> sunlight) must hold this long, every sample high
     "jumpDarkLux": 50.0,   # "dark" stable value for the jump rule
     "jumpFactor": 5.0,     # implausible: from < jumpDarkLux to > jumpFactor*stable + jumpAbsLux
@@ -106,9 +108,11 @@ DEFAULTS = {
     "kbdRestoreSeconds": 1.0,  # 2.16.0: after a blank, resume or lid open, the keyboard waits this long
                                # (and for Omarchy's `omarchy-brightness-keyboard restore`) before deciding
     "kbdRestoreMaxSeconds": 6.0,  # ...but never longer than this for a restore that never comes
-    "sampleSeconds": 0.5,    # 2.16.0: read the light sensors twice a second, also while fading (was: on every
-                             # 60 Hz fade pass); brightness writes stay at 60 Hz
-    "popupSampleSeconds": 0.25,  # ...4 times a second while the popup is open (live lux)
+    "sampleSeconds": 1.0,    # 2.16.5: once a second, also while fading and with the popup open (was 0.5 / 0.25).
+                             # At 2 Hz the XPS sensor firmware stuck at 0 lx: a gap under about 0.45 s after a
+                             # read ended left it answering 0 until a longer gap. Brightness writes stay at 60 Hz
+    "popupSampleSeconds": 1.0,  # same while the popup is open (was 0.25)
+    "sampleMinGapSeconds": 0.9,  # 2.16.5: never start a read until this long after the last one ended
     "returnSeconds": 120.0,  # 2.16.0: a dark -> bright jump back to (about) the light of the last
                              # this-many seconds is a return, not a "sustained jump" that must hold jumpSeconds
     "glitchQuarantineSeconds": 30.0,  # 2.8.0: a sensor that just reported an impossible value
@@ -117,12 +121,14 @@ DEFAULTS = {
                              # (and 20x lower): a single-sensor HID burst, use the lower one
     "glitchEpisodeSeconds": 90.0,  # 2.8.1: after any impossible value, no dark -> >jumpHugeLux jump
     "logMaxBytes": 1000000,  # 2.8.0: decision log size cap (one rotated copy kept)
+    "debugLog": False,       # 2.16.6: off = errors, sensor faults and state changes only;
+                             # on = every decision (lux, heartbeats, fades) as before
     "previewSeconds": 2.0,       # 2.12.0: after a min/max change, follow it at once this long...
     "previewFadeSeconds": 0.15,  # ...with fades this short (slider drag in the popup)
 }
 MAX_LUX = 60000
 STALE_SECONDS = 30  # a state file older than this was left by a daemon that is not running
-VERSION = "2.16.1"
+VERSION = "2.16.6"
 
 
 def load_conf():
@@ -134,6 +140,8 @@ def load_conf():
         pass
     c["min"] = max(1, min(100, int(c["min"])))
     c["max"] = max(c["min"], min(100, int(c["max"])))
+    v = c.get("debugLog", False)
+    c["debugLog"] = v is True or v in (1, "on", "true", "1")
     return c
 
 
@@ -161,72 +169,93 @@ def read(path, default=None):
         return default
 
 
-def sensors():
-    out = []
-    for d in sorted(glob.glob("/sys/bus/iio/devices/iio:device*")):
+IIO = "/sys/bus/iio/devices"
+
+
+def sensor():
+    """(file, scale) of the ambient light sensor, or None. 2.16.4: the plain
+    illuminance sensor only. The XPS also lists a colour view of the same
+    chip (colour temperature, chromaticity); reading both doubled the traffic
+    to the sensor hub and its 0 lx dropouts, and added nothing."""
+    found = []
+    for d in sorted(glob.glob(IIO + "/iio:device*")):
         if read(d + "/name") != "als":
             continue
-        if os.path.exists(d + "/in_illuminance_input"):
-            out.append((d + "/in_illuminance_input", 1.0))
-        elif os.path.exists(d + "/in_illuminance_raw"):
-            out.append((d + "/in_illuminance_raw", float(read(d + "/in_illuminance_scale", "1") or 1)))
-    return out
+        if not (os.path.exists(d + "/in_illuminance_input") or os.path.exists(d + "/in_illuminance_raw")):
+            continue
+        colour = glob.glob(d + "/in_colortemp_*") or glob.glob(d + "/in_chromaticity_*")
+        found.append((bool(colour), d))
+    if not found:
+        return None
+    d = min(found)[1]  # plain before colour, then by device name
+    if os.path.exists(d + "/in_illuminance_input"):
+        return d + "/in_illuminance_input", 1.0
+    return d + "/in_illuminance_raw", float(read(d + "/in_illuminance_scale", "1") or 1)
 
 
 def lux_raw(sens):
-    """One raw sample per sensor in lux (None = unreadable), not range-checked."""
-    out = []
-    for path, scale in sens:
-        try:
-            out.append(float(read(path)) * scale)
-        except (TypeError, ValueError):
-            out.append(None)
-    return out
+    """One raw sample in lux (None = unreadable), not range-checked."""
+    try:
+        return float(read(sens[0])) * sens[1]
+    except (TypeError, ValueError):
+        return None
 
 
 READER_THREAD = True  # tests with a fake clock read inline instead
 
 
 class SensorReader:
-    """2.16.0: reads the light sensors at most every `interval` seconds.
-    Each sysfs read of an XPS HID light sensor is a round trip to the sensor
-    hub (0.1-0.5 s measured, the kernel waits up to 5 s), so reading on every
-    60 Hz fade pass stalled the fade and multiplied the reads; the logged
-    impossible values came 11x more often per hour while fading. A
-    background thread reads, the loop takes the newest sample (or None)."""
+    """2.16.0: reads the light sensor at most every `interval` seconds.
+    2.16.5: once a second, also with the popup open, and never starts a read
+    until `min_gap` (0.9 s) after the last one ended. The XPS sensor firmware
+    sticks at 0 lx when that gap is under about 0.45 s, and stays stuck until
+    a longer gap. Each sysfs read is a round trip to the sensor hub (0.1 s
+    measured, the kernel waits up to 5 s). A background thread reads, the
+    loop takes the newest sample (or None). A wake flush still asks for a
+    fresh read, but only after the gap."""
 
     def __init__(self, sens, threaded=None):
         import threading
-        self.sens, self.interval = sens, 0.5
+        self.sens, self.interval, self.min_gap = sens, 1.0, 0.9
         self.threaded = READER_THREAD if threaded is None else threaded
-        self.last = None      # (t, samples, ms) not taken yet
-        self.read_at = None   # inline: when we last read
-        self.ms = [None] * len(sens)
+        self.last = None      # (t, sample, ms) not taken yet
+        self.read_at = None   # inline: when we last started a read
+        self.last_end = None  # when the last read ended (monotonic, or the fake clock)
+        self.ms = None
         self.stale = -1e18    # samples read before this (monotonic) are dropped
         if self.threaded:
             self.lock, self.wake = threading.Lock(), threading.Event()
             threading.Thread(target=self._loop, name="sensors", daemon=True).start()
 
+    def _gap(self):
+        return max(0.9, float(self.min_gap))
+
     def _read(self):
-        out, ms = [], []
-        for path, scale in self.sens:
-            t0 = time.monotonic()
-            out.extend(lux_raw([(path, scale)]))
-            ms.append(round((time.monotonic() - t0) * 1000))
-        return time.monotonic(), out, ms
+        t0 = time.monotonic()
+        v = lux_raw(self.sens)
+        return time.monotonic(), v, round((time.monotonic() - t0) * 1000)
 
     def _loop(self):
         while True:
+            now = time.monotonic()
+            if self.last_end is not None:
+                left = self._gap() - (now - self.last_end)
+                if left > 0:
+                    time.sleep(left)
             t0 = time.monotonic()
             got = self._read()
+            self.last_end = time.monotonic()
             with self.lock:
                 if t0 >= self.stale:
                     self.last = got
-            self.wake.wait(max(0.0, self.interval - (time.monotonic() - t0)))
-            self.wake.clear()
+            remain = self.interval - (self.last_end - t0)
+            if remain > 0:
+                self.wake.wait(remain)
+                self.wake.clear()
 
     def flush(self, t):
-        """Forget what was read before t (resume, lid open) and read again now."""
+        """Forget what was read before t (resume, lid open) and read again
+        as soon as the 0.9 s gap allows."""
         if self.threaded:
             with self.lock:
                 self.stale, self.last = t, None
@@ -235,14 +264,17 @@ class SensorReader:
             self.read_at = None
 
     def take(self, t):
-        """(t, samples, ms) read since the last take, or None."""
+        """(t, sample, ms) read since the last take, or None."""
         if not self.threaded:
             if self.read_at is not None and t - self.read_at < self.interval - 1e-6:
                 return None
+            if self.last_end is not None and t - self.last_end < self._gap() - 1e-6:
+                return None
             self.read_at = t
-            _, samples, ms = self._read()
+            _, sample, ms = self._read()
+            self.last_end = t
             self.ms = ms
-            return t, samples, ms
+            return t, sample, ms
         with self.lock:
             got, self.last = self.last, None
         if got is not None:
@@ -250,20 +282,15 @@ class SensorReader:
         return got
 
 
-def lux_once(sens):
-    """One raw sample per sensor (None = unreadable or impossible)."""
-    return [v if v is not None and 0 <= v <= MAX_LUX else None for v in lux_raw(sens)]
-
-
 def lux_now(sens):
-    vals = [v for v in lux_once(sens) if v is not None]
-    return max(vals) if vals else None  # the brighter sensor wins
+    v = lux_raw(sens) if sens else None
+    return v if v is not None and 0 <= v <= MAX_LUX else None
 
 
 def time_median(h):
     """Lower median of (t, lux) readings, each weighted by how long it lasted
     (until the next reading; the newest as long as the gap before it). The
-    daemon samples at 60 Hz while fading and at 2 Hz otherwise, so counting
+    daemon samples at 60 Hz while fading and at 1 Hz otherwise, so counting
     samples let a 2 s burst during a fade outvote the calm readings before it.
     Ties go to the lower value, so a spike never wins half the window."""
     if not h:
@@ -281,109 +308,90 @@ def time_median(h):
 
 
 class SensorFilter:
-    """Per-sensor rolling median over `secs`, then the brighter sensor wins.
-    The XPS 14 HID light sensors sometimes report a burst of 0.5-1.5 s of
-    garbage (tens of thousands of lux in a dark room), alternating between the
-    two sensors, so max() of raw samples saw a >2 s 'sunlight' spike. A median
-    per sensor needs a change to hold for over half the window."""
+    """Rolling median over `secs` of the light sensor's readings.
+    The XPS 14 HID light sensor sometimes reports a burst of 0.5-1.5 s of
+    garbage (tens of thousands of lux in a dark room), so a raw sample saw a
+    >2 s 'sunlight' spike. A median needs a change to hold for over half the
+    window. Impossible values quarantine the sensor and exact zeros are
+    suspect (2.16.4: one sensor, so no second sensor to compare with)."""
 
-    def __init__(self, n, secs, c=None):
-        self.secs, self.hist = secs, [[] for _ in range(n)]
+    def __init__(self, secs, c=None):
+        self.secs, self.hist = secs, []
         self.c = c if c is not None else DEFAULTS
-        self.bad_until = [-1e9] * n   # 2.8.0: per-sensor quarantine after an impossible value
-        self.medians = [None] * n
+        self.bad_until = -1e9         # 2.8.0: quarantine after an impossible value
+        self.median = None
         self.standing = set()
         self.last_out = None          # 2.8.1: last value handed to the controller
-        self.note = ""                # why a sensor was ignored this sample (for the log)
-        self.zero_since = [None] * n  # 2.10.0: start of a run of exact-0 samples per sensor
+        self.note = ""                # why the sensor was ignored this sample (for the log)
+        self.zero_since = None        # 2.10.0: start of a run of exact-0 samples
         self.last_glitch = None       # last sample inside a glitch episode
         self.live = None              # 2.12.0: this sample's lux, glitch rules but no median (popup)
-        self.lit_ref = [None] * n     # 2.16.0: last median per sensor, kept through a quarantine
+        self.last_median = None       # 2.16.0: last median, kept through a quarantine
         self.dim_seen = None          # 2.16.0: last faint real reading (the room really is dark)
-        self.lit_seen = None          # 2.16.0: last lit in-range reading on any sensor
+        self.zero_fault = False       # 2.16.6: this zero run is a stuck-zero episode (logged once)
 
-    def feed(self, t, samples):
-        """samples: raw lux per sensor (None = unreadable). Values outside
-        0..MAX_LUX are HID garbage: they quarantine that sensor for a while."""
-        c, notes = self.c, []
+    def feed(self, t, v):
+        """v: raw lux (None = unreadable). Values outside 0..MAX_LUX are HID
+        garbage: they quarantine the sensor for a while. Returns the lux the
+        controller should see, or None (hold)."""
+        c, notes, h = self.c, [], self.hist
         q = c["glitchQuarantineSeconds"]
-        now = [None] * len(samples)
-        # 2.16.0: a faint but real reading (0 < lux <= zeroDropoutLux) from a
+        # 2.16.0: a faint but real reading (0 < lux <= faintLux) from the
         # sensor in good standing is evidence that the room really is dark
-        # ...and any lit reading in range (even from a quarantined sensor)
-        # is evidence that it is not: both sensors sit in the same bezel, so
-        # one reading exactly 0 next to a lit one is a dropout
-        for i, v in enumerate(samples):
-            if v is not None and 0 < v <= c["zeroDropoutLux"] and t >= self.bad_until[i]:
-                self.dim_seen = t
-            if v is not None and c["zeroDropoutLux"] < v <= MAX_LUX:
-                self.lit_seen = t
-        for i, (h, v) in enumerate(zip(self.hist, samples)):
-            if v is not None and not (0 <= v <= MAX_LUX):
-                if t >= self.bad_until[i]:
-                    notes.append(f"sensor{i} impossible {v:.0f} lx, quarantined {q:.0f}s")
-                self.bad_until[i] = t + q
-                h.clear()
-                v = None
-            # 2.10.0: both XPS HID sensors keep dropping to exactly 0 in an
-            # unchanged room. The kernel's HID sensor read returns 0 when the
-            # sensor hub sends no value (drivers/hid/hid-sensor-hub.c), so an
-            # exact 0 from a lit sensor means "no data", not darkness.
-            # 2.16.0: logged runs of 6-17 s on both sensors at once, often
-            # next to impossible values, dimmed a 500-1100 lx room to 42 % or
-            # 1 %. The sensor's last lit level now survives the quarantine
-            # (lit_ref), and exact zeros wait zeroDropoutSeconds unless a faint
-            # real reading shows the room is going dark (then zeroTrustSeconds,
-            # as before). Real darkness still wins, it just has to last.
-            if v == 0:
-                if self.zero_since[i] is None:
-                    self.zero_since[i] = t
-                refs = [m if m is not None else r for m, r in zip(self.medians, self.lit_ref)]
-                lit = any(r is not None and c["zeroDropoutLux"] < r <= c["jumpHugeLux"] for r in refs)
-                if lit:
-                    # the wait runs from the last lit reading on any sensor
-                    since = max(self.zero_since[i], self.lit_seen if self.lit_seen is not None else -1e18)
-                    dark = self.dim_seen is not None and self.dim_seen >= since - c["zeroDarkSeconds"]
-                    wait = c["zeroTrustSeconds"] if dark else c["zeroDropoutSeconds"]
-                    if self.lit_seen == t or t - since < wait:
-                        v = None
-                    else:
-                        h.clear()  # held long enough: drop the old light samples at once
-            elif v is not None:
-                self.zero_since[i] = None
-            if v is not None:
-                h.append((t, v))
-                now[i] = v
-            while h and t - h[0][0] > self.secs:
-                h.pop(0)
-            self.medians[i] = time_median(h)
-            if self.medians[i] is not None:
-                self.lit_ref[i] = self.medians[i]
-        ok = [i for i, m in enumerate(self.medians) if m is not None and t >= self.bad_until[i]]
-        if not ok and any(m is not None for m in self.medians) and any(t < b for b in self.bad_until):
-            # 2.16.0: every usable sensor is quarantined: hold (was: fall back
-            # to the quarantined ones, whose fresh 0 lx dimmed a lit room)
-            notes.append("all sensors quarantined, holding")
-        vals = [self.medians[i] for i in ok]
-        best = max(vals) if vals else None
-        # 2.8.1: the cross-sensor check looks at EVERY sensor with a median,
-        # quarantined or not. In a logged glitch sensor1's quarantine ran out
-        # first while sensor0 (honestly reading 1 lx) was still quarantined,
-        # so sensor1's in-range 43021 lx burst won alone and was accepted.
-        allv = [m for m in self.medians if m is not None]
-        if any(t < b + c["glitchEpisodeSeconds"] for b in self.bad_until):
+        if v is not None and 0 < v <= c["faintLux"] and t >= self.bad_until:
+            self.dim_seen = t
+        if v is not None and not (0 <= v <= MAX_LUX):
+            if t >= self.bad_until:
+                notes.append(f"sensor impossible {v:.0f} lx, quarantined {q:.0f}s")
+            self.bad_until = t + q
+            h.clear()
+            v = None
+        # 2.10.0: the XPS HID sensor keeps dropping to exactly 0 in an
+        # unchanged room. The kernel's HID sensor read returns 0 when the
+        # sensor hub sends no value (drivers/hid/hid-sensor-hub.c), so an
+        # exact 0 next to a non-zero reading means "no data", not darkness.
+        # 2.16.4: that holds at any light level (logged: 16 lx -> 1 % for
+        # 40 s). Exact zeros wait zeroDropoutSeconds, unless a faint real
+        # reading came just before (lights off): then zeroTrustSeconds. With
+        # no non-zero reading to hold on to, a zero is just the reading.
+        ref = self.median if self.median is not None else self.last_median
+        if v == 0:
+            if self.zero_since is None:
+                self.zero_since = t
+            if ref is not None and 0 < ref <= c["jumpHugeLux"]:  # (above that it is a burst, not a room)
+                dark = self.dim_seen is not None and self.dim_seen >= self.zero_since - c["zeroDarkSeconds"]
+                wait = c["zeroTrustSeconds"] if dark else c["zeroDropoutSeconds"]
+                if t - self.zero_since < wait:
+                    v = None
+                else:
+                    h.clear()  # held long enough: drop the old light samples at once
+                # 2.16.6: a dropout-path zero run (not a real lights-off) is a
+                # sensor fault; note it once after it has lasted a bit
+                if wait == c["zeroDropoutSeconds"] and not self.zero_fault:
+                    held = t - self.zero_since
+                    if held >= min(10.0, c["zeroDropoutSeconds"]):
+                        notes.append(f"sensor stuck at 0 lx for {held:.0f}s")
+                        self.zero_fault = True
+        elif v is not None:
+            if self.zero_fault and self.zero_since is not None:
+                notes.append(f"sensor 0 lx ended after {t - self.zero_since:.0f}s")
+            self.zero_fault = False
+            self.zero_since = None
+        if v is not None:
+            h.append((t, v))
+        while h and t - h[0][0] > self.secs:
+            h.pop(0)
+        self.median = time_median(h)
+        if self.median is not None:
+            self.last_median = self.median
+        best = self.median if t >= self.bad_until else None  # quarantined: hold
+        # 2.8.1: during a glitch episode (the sensor went impossible in the
+        # last glitchEpisodeSeconds) a dark -> sunlight jump is not believed at all
+        if t < self.bad_until + c["glitchEpisodeSeconds"]:
             self.last_glitch = t
-        live = self.live_lux(t, now)
+        live = self.live_lux(t, v)
         if live is not None:
             self.live = live
-        if len(allv) >= 2 and best is not None:
-            lo = min(allv)
-            if (best > c["jumpHugeLux"] and lo < c["jumpDarkLux"]
-                    and (best + 1) / (lo + 1) > c["disagreeRatio"]):
-                notes.append(f"sensors disagree ({best:.0f} vs {lo:.1f} lx), using the lower")
-                best = lo
-        # 2.8.1: during a glitch episode (a sensor went impossible in the last
-        # glitchEpisodeSeconds) a dark -> sunlight jump is not believed at all
         if (best is not None and self.last_glitch == t
                 and self.last_out is not None and self.last_out < c["jumpDarkLux"]
                 and best > c["jumpHugeLux"]):
@@ -398,33 +406,23 @@ class SensorFilter:
         self.note = "; ".join(new)
         return best
 
-    def live_lux(self, t, now):
-        """Lux from this sample alone, for the popup: the same
-        per-sensor rules (range, quarantine, 0 lx drop-outs, cross-sensor
-        disagreement, glitch episode) but no median, so it follows the room
-        at once. None when no sensor gave a usable reading this sample."""
+    def live_lux(self, t, v):
+        """Lux from this sample alone, for the popup: the same rules (range,
+        quarantine, 0 lx drop-outs, glitch episode) but no median, so it
+        follows the room at once. None when the sample is not usable."""
         c = self.c
-        ok = [v for i, v in enumerate(now) if v is not None and t >= self.bad_until[i]]
-        if not ok:
+        if v is None or t < self.bad_until:
             return None
-        best = max(ok)
-        allv = [v for v in now if v is not None]
-        if len(allv) >= 2:
-            lo = min(allv)
-            if best > c["jumpHugeLux"] and lo < c["jumpDarkLux"] and (best + 1) / (lo + 1) > c["disagreeRatio"]:
-                best = lo
         if (self.last_glitch == t and self.live is not None and self.live < c["jumpDarkLux"]
-                and best > c["jumpHugeLux"]):
-            best = self.live
-        return best
+                and v > c["jumpHugeLux"]):
+            return self.live
+        return v
 
     def clear(self):
         """Fresh start (resume, lid open): forget the old room."""
-        for h in self.hist:
-            h.clear()
-        n = len(self.hist)
-        self.medians, self.lit_ref, self.zero_since = [None] * n, [None] * n, [None] * n
-        self.dim_seen = self.lit_seen = None
+        self.hist.clear()
+        self.median = self.last_median = self.zero_since = self.dim_seen = None
+        self.zero_fault = False
 
 
 def curve_pct(lux, c):
@@ -752,7 +750,12 @@ class Dev:
                           "org.freedesktop.login1.Session", "SetBrightness",
                           GLib.Variant("(ssu)", (sub, self.name, int(raw))), None, 0, 2000, None)
         except Exception:
-            subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))], check=False)
+            # 2.16.3: with a timeout, so a stuck fallback cannot stall the loop
+            try:
+                subprocess.run(["brightnessctl", "-q", "-d", self.name, "set", str(int(raw))],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
 
 
 POWER_SUPPLY = "/sys/class/power_supply"
@@ -841,6 +844,34 @@ def popup_open():
         return False
 
 
+def _kb(path, key=None):
+    try:
+        with open(path) as f:
+            if key is None:
+                return int(f.read().strip()) // 1024
+            for line in f:
+                if line.startswith(key):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def mem_kb():
+    """2.16.3: memory in KB for the decision log, to see a leak while it
+    happens: the daemon's own RSS and swap, and the whole service's RAM and
+    swap (children like hyprctl included). The service may not swap."""
+    out = {"rss": _kb("/proc/self/status", "VmRSS:"), "swap": _kb("/proc/self/status", "VmSwap:")}
+    try:
+        with open("/proc/self/cgroup") as f:
+            cg = "/sys/fs/cgroup" + f.read().strip().split("::", 1)[1]
+        out["unit"] = _kb(cg + "/memory.current")
+        out["unitSwap"] = _kb(cg + "/memory.swap.current")
+    except (OSError, IndexError):
+        pass
+    return out
+
+
 def write_state(d):
     tmp = STATE + ".tmp"
     with open(tmp, "w") as f:
@@ -852,10 +883,21 @@ def log(*a):
     print(*a, flush=True)
 
 
+def default_log_event(msg):
+    """2.16.6: events kept when the debug log is off: sensor faults (quarantine,
+    stuck-zero episode), errors, and state changes (start, stop, mode)."""
+    if not msg or msg == "heartbeat":
+        return False
+    if msg.startswith(("sensor ", "mode ", "error", "stop", "start", "glitch ")):
+        return True
+    return "quarantine" in msg
+
+
 class DecisionLog:
-    """2.8.0: structured JSON-lines log of every brightness decision, for
-    investigating bugs later. Size-capped: at logMaxBytes the file moves to
-    decisions.jsonl.1 (one old copy kept). Only light levels and states."""
+    """2.8.0: structured JSON-lines log. 2.16.6: by default only faults and
+    state changes; with debugLog, every decision (lux, heartbeats, fades).
+    Size-capped either way: at logMaxBytes the file moves to
+    decisions.jsonl.1 (one old copy kept)."""
 
     def __init__(self, path=DLOG, max_bytes=1000000):
         self.path, self.max = path, max_bytes
@@ -1012,7 +1054,7 @@ def restore_replaced(keyboard=True):
 
 
 def run():
-    sens = sensors()
+    sens = sensor()
     bl_path = find_dev("backlight", "*")
     if not sens or not bl_path:
         log("no ambient light sensor or backlight found; exiting")
@@ -1020,213 +1062,225 @@ def run():
     bl = Dev(bl_path)
     kp = find_dev("leds", "*kbd_backlight")
     kbd = Dev(kp) if kp else None
-    log(f"sensors={[p for p, _ in sens]} backlight={bl.name} kbd={kbd.name if kbd else None}")
+    log(f"sensor={sens[0]} backlight={bl.name} kbd={kbd.name if kbd else None}")
     c = load_conf()
     ctl = Controller(c)
-    filt = SensorFilter(len(sens), c["sensorMedianSeconds"], c)
+    filt = SensorFilter(c["sensorMedianSeconds"], c)
     dlog = DecisionLog(DLOG, c["logMaxBytes"])
     trigger = "start"
-    dlog.write(event="start", version=VERSION, sensors=len(sens))
+    dlog.write(event="start", version=VERSION, sensor=os.path.basename(os.path.dirname(sens[0])))
+    def _stop_signal(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _stop_signal)
     held = False
     conf_mtime = None
     last_set = None          # raw we last wrote
     was_closed = False
     last_wall, last_mono = time.time(), time.monotonic()
     reason = ""
-    # 2.16.0: the sensors are read in the background at most every
+    # 2.16.0: the sensor is read in the background at most every
     # sampleSeconds; the loop itself still runs at 60 Hz while fading, for
     # smooth brightness writes
     reader = SensorReader(sens)
-    samples, filtered = [None] * len(sens), None
+    sample, filtered = None, None
     # 2.16.0: after a blank, resume or lid open the keyboard waits for
     # Omarchy's restore: (since, the level auto had chosen before)
     kbd_pending = None
     saw_blank = False        # a lock blank record existed during this screen-off hold
     last_replace = None
     prev_reason = ""
-    while True:
-        t = time.monotonic()
-        if last_replace is None or t - last_replace >= 60:
-            last_replace = t
-            for msg in replace_upstream(c["keyboard"] and kbd is not None):
-                log(msg)
-                dlog.write(event=msg, trigger="replace")
-        m = os.path.getmtime(CONF) if os.path.exists(CONF) else None
-        if m != conf_mtime:
-            old, (c, conf_mtime) = c, (load_conf(), m)
-            if (old["min"], old["max"]) != (c["min"], c["max"]):
-                ctl.preview_until = t + c["previewSeconds"]  # 2.12.0: slider drag, show it live
-            ctl.c = c
-            filt.c = c
-        # resume detection: wall clock jumped further than the monotonic one
-        wall = time.time()
-        if (wall - last_wall) - (t - last_mono) > 20:
-            kbd_pending = (t, ctl.kbd_want if kbd_pending is None else kbd_pending[1])
-            ctl.reset(t, "resume")
-            trigger = "resume"
-            filt.clear()
-            last_set = None
-            reader.flush(t)
-        last_wall, last_mono = wall, t
-        closed = lid_closed()
-        if was_closed and not closed:
-            kbd_pending = (t, ctl.kbd_want if kbd_pending is None else kbd_pending[1])
-            ctl.reset(t, "lid opened")
-            trigger = "lid opened"
-            filt.clear()
-            last_set = None
-            reader.flush(t)
-        was_closed = closed
-        ctl.new_day(t, datetime.date.today().isoformat())
-        reader.interval = c["popupSampleSeconds"] if popup_open() else c["sampleSeconds"]
-        got = reader.take(t)
-        if got is not None:
-            ts, samples, _ = got
-            filtered = filt.feed(ts, samples)
-            ctl.feed_lux(ts, filtered)
-        msgs = [msg for _, msg in ctl.events]
-        if filt.note:
-            log(filt.note)
-            msgs.insert(0, filt.note)
-            filt.note = ""  # 2.16.0: not every pass feeds the filter any more
-        for msg in [m for _, m in ctl.events]:
-            log(msg)
-        ctl.events.clear()
-
-        if prev_reason == "screen off" and kbd is not None:
-            # 2.16.0: Omarchy's wake runs `dpms on` and then the keyboard
-            # restore, which deletes the blank record: once it is gone the
-            # screen is on, so look again now instead of after the 2 s cache
-            if os.path.exists(kbd_saved(kbd)):
-                saw_blank = True
-            elif saw_blank:
-                _cache.pop("dpms", None)
-        reason = hold_reason(c["enabled"], closed, os.path.exists(HOLD_FLAG), screen_off, ctl.stable is not None)
-        video_hold = False
-        low_bat = False
-
-        cur = bl.get()
-        busy = False
-        if reason == "auto" and held:
-            # 2.16.0: coming back from a hold. The keyboard waits for Omarchy's
-            # restore and then keeps the level unless the room crossed a
-            # keyboard line meanwhile (was: always re-applied, which undid a
-            # key press to off and could race the restore).
-            if kbd_pending is None:
-                kbd_pending = (t, ctl.kbd_want)
-            if prev_reason in ("screen off", "walk-away dim"):
-                # like a MacBook display waking: match the room right away
-                ctl.screen_wake_until = t + c["wakeSeconds"]
-                trigger = "screen on"
-        if reason != "screen off":
-            saw_blank = False
-        prev_reason = reason
-        held = reason != "auto"
-        if reason == "auto":
-            # 2.16.0: any change of 2 raw steps / 0.5 % is yours (was 1.5 %,
-            # which faded Omarchy's 1 % steps back); we compare against the
-            # exact raw value we wrote, so our own writes never count
-            if last_set is not None and abs(cur - last_set) >= max(2, bl.max * 0.005):
-                ctl.manual(t, cur / bl.max * 100, datetime.date.today().isoformat())
-            no_dim = fullscreen_video()
-            tg = ctl.target()
-            video_hold = bool(no_dim and tg is not None and tg < cur / bl.max * 100 - 1)
-            pct = ctl.step(t, cur / bl.max * 100, no_dim=no_dim)
-            if pct is not None:
-                raw = max(1, round(pct / 100 * bl.max))
-                if raw != cur:
-                    bl.set(raw)
-                cur = raw
-            busy = ctl.ramp is not None
-            last_set = cur
-            if kbd and c["keyboard"] and kbd_pending is not None:
-                since, before = kbd_pending
-                waited = t - since
-                # the record is as old as the blank (hours, maybe): any record
-                # means the restore is still to come
-                restoring = blank_saved(kbd, float("inf"))
-                if (ctl.stable is not None and waited >= c["kbdRestoreSeconds"]
-                        and (not restoring or waited >= c["kbdRestoreMaxSeconds"])):
-                    kbd_pending = None
-                    ctl.kbd_want, ctl.kbd_dark = before, None
-                    band = ctl.kbd_band(kbd.max, before)
-                    if before is not None and (band is None or band == before):
-                        msgs.append(f"keyboard left as it is after {trigger} (room still level {before})")
-            if kbd and c["keyboard"] and kbd_pending is None:
-                # 2.15.0: low battery caps what auto sets at level 1; 2.16.0:
-                # only matters when kbdMaxLevel is above 1. A key press to a
-                # higher level still sticks (only transitions are written).
-                top = min(kbd.max, int(c["kbdMaxLevel"]))
-                low_bat = top > 1 and low_battery(c)
-                want = ctl.kbd_level(1 if low_bat else kbd.max, t)
-                # only act on transitions, so the firmware idle-off and the
-                # user's own key presses are never overridden
-                if want is not None and want != ctl.kbd_want:
-                    why = " (low battery cap)" if low_bat else ""
-                    if kbd_write(kbd, want, c["kbdRestoreMaxSeconds"]):
-                        log(f"lux={ctl.stable:.1f} keyboard -> {want}{why}")
-                        msgs.append(f"keyboard -> {want}{why}")
-                        ctl.kbd_want = want
-            for et, msg in ctl.events:
-                log(msg)
-                msgs.append(msg)
+    try:
+        while True:
+            t = time.monotonic()
+            if last_replace is None or t - last_replace >= 60:
+                last_replace = t
+                for msg in replace_upstream(c["keyboard"] and kbd is not None):
+                    if c["debugLog"]:
+                        log(msg)
+                        dlog.write(event=msg, trigger="replace")
+            m = os.path.getmtime(CONF) if os.path.exists(CONF) else None
+            if m != conf_mtime:
+                old, (c, conf_mtime) = c, (load_conf(), m)
+                if (old["min"], old["max"]) != (c["min"], c["max"]):
+                    ctl.preview_until = t + c["previewSeconds"]  # 2.12.0: slider drag, show it live
+                ctl.c = c
+                filt.c = c
+            # resume detection: wall clock jumped further than the monotonic one
+            wall = time.time()
+            if (wall - last_wall) - (t - last_mono) > 20:
+                kbd_pending = (t, ctl.kbd_want if kbd_pending is None else kbd_pending[1])
+                ctl.reset(t, "resume")
+                trigger = "resume"
+                filt.clear()
+                last_set = None
+                reader.flush(t)
+            last_wall, last_mono = wall, t
+            closed = lid_closed()
+            if was_closed and not closed:
+                kbd_pending = (t, ctl.kbd_want if kbd_pending is None else kbd_pending[1])
+                ctl.reset(t, "lid opened")
+                trigger = "lid opened"
+                filt.clear()
+                last_set = None
+                reader.flush(t)
+            was_closed = closed
+            ctl.new_day(t, datetime.date.today().isoformat())
+            reader.interval = c["popupSampleSeconds"] if popup_open() else c["sampleSeconds"]
+            reader.min_gap = c["sampleMinGapSeconds"]
+            got = reader.take(t)
+            if got is not None:
+                ts, sample, _ = got
+                filtered = filt.feed(ts, sample)
+                ctl.feed_lux(ts, filtered)
+            msgs = [msg for _, msg in ctl.events]
+            if filt.note:
+                if c["debugLog"] or default_log_event(filt.note):
+                    log(filt.note)
+                msgs.insert(0, filt.note)
+                filt.note = ""  # 2.16.0: not every pass feeds the filter any more
+            for msg in [m for _, m in ctl.events]:
+                if c["debugLog"] or default_log_event(msg):
+                    log(msg)
             ctl.events.clear()
-        else:
-            last_set = None
-            ctl.ramp = None
-        if reason != dlog.last_reason:
-            msgs.append(f"mode {dlog.last_reason} -> {reason}")
-            dlog.last_reason = reason
-        if msgs or t - dlog.last_beat >= 60:
-            tg = ctl.target()
-            dlog.write(event="; ".join(msgs) if msgs else "heartbeat", trigger=trigger,
-                       raw=[None if v is None else round(v, 1) for v in samples],
-                       median=[None if v is None else round(v, 1) for v in filt.medians],
-                       readMs=reader.ms,  # 2.16.0: how long each sensor read took
-                       filtered=None if filtered is None else round(filtered, 1),
-                       stable=None if ctl.stable is None else round(ctl.stable, 1),
-                       target=None if tg is None else round(tg, 1),
-                       current=round(bl.get() / bl.max * 100, 1),
-                       mode=reason, wake=ctl.waking(t), offset=round(ctl.offset, 1),
-                       kbd=ctl.kbd_want, fade=None if ctl.ramp is None else [round(ctl.ramp[1]), round(ctl.ramp[2]), ctl.ramp[3]])
-            dlog.last_beat = t
-            trigger = "sensor"
 
-        write_state({
-            "ts": round(time.time(), 1),
-            "enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"],
-            "lux": None if ctl.stable is None else round(ctl.stable, 1),
-            "screen": round(bl.get() / bl.max * 100),
-            "target": None if ctl.target() is None else round(ctl.target()),
-            "offset": round(ctl.offset), "mode": reason,
-            # 2.12.0: for the popup's status line and live lux
-            "luxNow": None if filt.live is None else round(filt.live, 1),
-            "fadeTo": None if ctl.ramp is None else round(ctl.ramp[2]),
-            "videoHold": video_hold, "waking": ctl.waking(t),
-            "dark": ctl.stable is not None and ctl.stable < c["kbdOnBelow"],
-            "lowBattery": low_bat,  # 2.15.0: the keyboard cap at level 1 is active
-            **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
-        })
-        # 2.9.0: 60 Hz while fading; idle at the sensor cadence (2.16.0: the
-        # sensors themselves are read at most 2 Hz, 4 Hz with the popup open)
-        time.sleep(1 / 60 if busy else reader.interval)
+            if prev_reason == "screen off" and kbd is not None:
+                # 2.16.0: Omarchy's wake runs `dpms on` and then the keyboard
+                # restore, which deletes the blank record: once it is gone the
+                # screen is on, so look again now instead of after the 2 s cache
+                if os.path.exists(kbd_saved(kbd)):
+                    saw_blank = True
+                elif saw_blank:
+                    _cache.pop("dpms", None)
+            reason = hold_reason(c["enabled"], closed, os.path.exists(HOLD_FLAG), screen_off, ctl.stable is not None)
+            video_hold = False
+            low_bat = False
+
+            cur = bl.get()
+            busy = False
+            if reason == "auto" and held:
+                # 2.16.0: coming back from a hold. The keyboard waits for Omarchy's
+                # restore and then keeps the level unless the room crossed a
+                # keyboard line meanwhile (was: always re-applied, which undid a
+                # key press to off and could race the restore).
+                if kbd_pending is None:
+                    kbd_pending = (t, ctl.kbd_want)
+                if prev_reason in ("screen off", "walk-away dim"):
+                    # like a MacBook display waking: match the room right away
+                    ctl.screen_wake_until = t + c["wakeSeconds"]
+                    trigger = "screen on"
+            if reason != "screen off":
+                saw_blank = False
+            prev_reason = reason
+            held = reason != "auto"
+            if reason == "auto":
+                # 2.16.0: any change of 2 raw steps / 0.5 % is yours (was 1.5 %,
+                # which faded Omarchy's 1 % steps back); we compare against the
+                # exact raw value we wrote, so our own writes never count
+                if last_set is not None and abs(cur - last_set) >= max(2, bl.max * 0.005):
+                    ctl.manual(t, cur / bl.max * 100, datetime.date.today().isoformat())
+                no_dim = fullscreen_video()
+                tg = ctl.target()
+                video_hold = bool(no_dim and tg is not None and tg < cur / bl.max * 100 - 1)
+                pct = ctl.step(t, cur / bl.max * 100, no_dim=no_dim)
+                if pct is not None:
+                    raw = max(1, round(pct / 100 * bl.max))
+                    if raw != cur:
+                        bl.set(raw)
+                    cur = raw
+                busy = ctl.ramp is not None
+                last_set = cur
+                if kbd and c["keyboard"] and kbd_pending is not None:
+                    since, before = kbd_pending
+                    waited = t - since
+                    # the record is as old as the blank (hours, maybe): any record
+                    # means the restore is still to come
+                    restoring = blank_saved(kbd, float("inf"))
+                    if (ctl.stable is not None and waited >= c["kbdRestoreSeconds"]
+                            and (not restoring or waited >= c["kbdRestoreMaxSeconds"])):
+                        kbd_pending = None
+                        ctl.kbd_want, ctl.kbd_dark = before, None
+                        band = ctl.kbd_band(kbd.max, before)
+                        if before is not None and (band is None or band == before):
+                            msgs.append(f"keyboard left as it is after {trigger} (room still level {before})")
+                if kbd and c["keyboard"] and kbd_pending is None:
+                    # 2.15.0: low battery caps what auto sets at level 1; 2.16.0:
+                    # only matters when kbdMaxLevel is above 1. A key press to a
+                    # higher level still sticks (only transitions are written).
+                    top = min(kbd.max, int(c["kbdMaxLevel"]))
+                    low_bat = top > 1 and low_battery(c)
+                    want = ctl.kbd_level(1 if low_bat else kbd.max, t)
+                    # only act on transitions, so the firmware idle-off and the
+                    # user's own key presses are never overridden
+                    if want is not None and want != ctl.kbd_want:
+                        why = " (low battery cap)" if low_bat else ""
+                        if kbd_write(kbd, want, c["kbdRestoreMaxSeconds"]):
+                            if c["debugLog"]:
+                                log(f"lux={ctl.stable:.1f} keyboard -> {want}{why}")
+                            msgs.append(f"keyboard -> {want}{why}")
+                            ctl.kbd_want = want
+                for et, msg in ctl.events:
+                    if c["debugLog"] or default_log_event(msg):
+                        log(msg)
+                    msgs.append(msg)
+                ctl.events.clear()
+            else:
+                last_set = None
+                ctl.ramp = None
+            if reason != dlog.last_reason:
+                msgs.append(f"mode {dlog.last_reason} -> {reason}")
+                dlog.last_reason = reason
+            debug = c["debugLog"]
+            kept = [m for m in msgs if debug or default_log_event(m)]
+            if kept or (debug and t - dlog.last_beat >= 60):
+                event = "; ".join(kept) if kept else "heartbeat"
+                if debug:
+                    tg = ctl.target()
+                    dlog.write(event=event, trigger=trigger,
+                               raw=None if sample is None else round(sample, 1),
+                               median=None if filt.median is None else round(filt.median, 1),
+                               readMs=reader.ms,
+                               filtered=None if filtered is None else round(filtered, 1),
+                               stable=None if ctl.stable is None else round(ctl.stable, 1),
+                               target=None if tg is None else round(tg, 1),
+                               current=round(bl.get() / bl.max * 100, 1),
+                               mode=reason, wake=ctl.waking(t), offset=round(ctl.offset, 1),
+                               kbd=ctl.kbd_want, fade=None if ctl.ramp is None else [round(ctl.ramp[1]), round(ctl.ramp[2]), ctl.ramp[3]],
+                               memKB=mem_kb())
+                    dlog.last_beat = t
+                else:
+                    dlog.write(event=event, trigger=trigger, mode=reason)
+                trigger = "sensor"
+
+            write_state({
+                "ts": round(time.time(), 1),
+                "enabled": c["enabled"], "min": c["min"], "max": c["max"], "keyboard": c["keyboard"],
+                "lux": None if ctl.stable is None else round(ctl.stable, 1),
+                "screen": round(bl.get() / bl.max * 100),
+                "target": None if ctl.target() is None else round(ctl.target()),
+                "offset": round(ctl.offset), "mode": reason,
+                # 2.12.0: for the popup's status line and live lux
+                "luxNow": None if filt.live is None else round(filt.live, 1),
+                "fadeTo": None if ctl.ramp is None else round(ctl.ramp[2]),
+                "videoHold": video_hold, "waking": ctl.waking(t),
+                "dark": ctl.stable is not None and ctl.stable < c["kbdOnBelow"],
+                "lowBattery": low_bat,  # 2.15.0: the keyboard cap at level 1 is active
+                **({"kbdLevel": kbd.get(), "kbdMax": kbd.max} if kbd else {}),
+            })
+            # 2.9.0: 60 Hz while fading. 2.16.5: idle at 0.25 s so sliders and
+            # keys stay live; the sensor itself is still read at most 1 Hz.
+            time.sleep(1 / 60 if busy else 0.25)
+    finally:
+        dlog.write(event="stop", version=VERSION)
 
 
 def describe_sensors():
-    out = []
-    for d in sorted(glob.glob("/sys/bus/iio/devices/iio:device*")):
-        name = read(d + "/name")
-        if name != "als":
-            continue
-        ch = sorted({os.path.basename(p).split("_")[1] for p in glob.glob(d + "/in_*_raw") + glob.glob(d + "/in_*_input")})
-        info = {"device": os.path.basename(d), "channels": ch}
-        sc = lambda n: float(read(f"{d}/in_{n}_scale", "1") or 1)
-        if "colortemp" in ch:
-            info["colortempK"] = round(float(read(d + "/in_colortemp_raw", "0")) * sc("colortemp"))
-        if "chromaticity" in ch:
-            info["chromaticityXY"] = [round(float(read(f"{d}/in_chromaticity_{a}_raw", "0")) * sc("chromaticity"), 3) for a in "xy"]
-        out.append(info)
-    return out
+    """The sensor the daemon reads: which device, what it exposes."""
+    sens = sensor()
+    if sens is None:
+        return []
+    d = os.path.dirname(sens[0])
+    ch = sorted({os.path.basename(p).split("_")[1] for p in glob.glob(d + "/in_*_raw") + glob.glob(d + "/in_*_input")})
+    return [{"device": os.path.basename(d), "channels": ch}]
 
 
 def kbd_dev():
@@ -1239,7 +1293,7 @@ def main(argv):
     if cmd == "run":
         return run() or 0
     if cmd == "lux":
-        print(lux_now(sensors()))
+        print(lux_now(sensor()))
         return 0
     if cmd == "sensors":
         print(json.dumps(describe_sensors(), indent=1))
@@ -1265,6 +1319,18 @@ def main(argv):
             return 2
         save_conf(c, ("kbdMaxLevel",) if k in ("kbd-max", "kbdMaxLevel") else ())
         c = load_conf()
+    elif cmd == "debug-log":
+        # 2.16.6: opt-in detailed decision log
+        if len(argv) == 2:
+            print("on" if c["debugLog"] else "off")
+            return 0
+        if len(argv) == 3 and argv[2] in ("on", "off"):
+            c["debugLog"] = argv[2] == "on"
+            save_conf(c, ("debugLog",))
+            print("debug-log " + argv[2])
+            return 0
+        print(__doc__, file=sys.stderr)
+        return 2
     elif cmd == "kbd-level" and len(argv) == 3:
         # Written like a key press: the daemon is not told, so it changes the
         # light again only when the room moves into another keyboard range or

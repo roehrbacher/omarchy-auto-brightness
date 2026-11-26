@@ -28,7 +28,7 @@ class Loop:
         self.ab = ab = load(self.tmp)
         self.t0, self.clock = 1000.0, 1000.0
         self.bl, self.kb = self.dev("intel_backlight", 1000, screen), self.dev("dell::kbd_backlight", 2, kbd)
-        self.s = [self.tmp + "/als0", self.tmp + "/als1"]
+        self.s = [self.tmp + "/als0"]
         self.room(lux)
         self.off = False
         self.writes, self.reads, self.states, self.sleeps = [], [], [], []
@@ -40,7 +40,7 @@ class Loop:
         def dev_set(dev, raw):
             loop.writes.append((dev.name, int(raw), loop.now()))
             open(dev.path + "/brightness", "w").write(f"{int(raw)}\n")
-        ab.sensors = lambda: [(f, 1.0) for f in self.s]
+        ab.sensor = lambda: (self.s[0], 1.0)
         ab.find_dev = lambda cls, pat: self.bl if cls == "backlight" else self.kb
         ab.Dev.set = dev_set
         ab.lid_closed = lambda: False

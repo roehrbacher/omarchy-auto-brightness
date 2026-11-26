@@ -4,7 +4,8 @@ Prints the time to the first dim and to the end of the dimming.
 2.16.0: with any faint real reading on the way (a hand lets 1-5 lx through,
 a dark room lit by the screen reads 1-4 lx) the timing is unchanged. Exact
 0.0 on both sensors straight from a lit room is also what the XPS HID
-dropouts look like (6-17 s runs), so on its own it waits zeroDropoutSeconds."""
+dropouts look like (6-17 s runs; 2.16.2: 27-45 s), so on its own it waits
+zeroDropoutSeconds."""
 import importlib.machinery, importlib.util, os
 here = os.path.dirname(__file__)
 p = os.path.join(here, "..", "bin", "omarchy-auto-brightness")
@@ -13,11 +14,11 @@ spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module
 
 def run(lux_at, secs):
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"])
+    ctl, filt = ab.Controller(c), ab.SensorFilter(c["sensorMedianSeconds"])
     t, cur, first, done, trace = 0.0, None, None, None, []
     while t < secs:
         v = lux_at(t)
-        ctl.feed_lux(t, filt.feed(t, [v, v]))
+        ctl.feed_lux(t, filt.feed(t, v))
         if cur is None and ctl.target() is not None: cur = ctl.target()
         if cur is not None:
             pct = ctl.step(t, cur)
@@ -36,7 +37,7 @@ first, done, end = run(lambda t: 300 if t < 20 else 1, 60)
 print("cover at 300 lx (1 lx): first dim after %.1f s, fully dark after %s s" % (first, done))
 assert first is not None and first <= 5.0 and done is not None and done <= 20.0, (first, done)
 Z = ab.DEFAULTS["zeroDropoutSeconds"]
-first, done, end = run(lambda t: 300 if t < 20 else 0, 80)
+first, done, end = run(lambda t: 300 if t < 20 else 0, 20 + Z + 40)
 print("300 lx -> exactly 0.0 on both sensors: first dim after %.1f s, fully dark after %s s, end %.0f%%" % (first, done, end))
 assert first is not None and Z <= first <= Z + 3.5, first
 assert done is not None and done <= Z + 20.0 and end <= 1.5, (done, end)

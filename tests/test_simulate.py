@@ -85,14 +85,12 @@ before = len(seen); kb(3.5); assert len(seen) == before, "no write without a thr
 kb(0); kb(19); assert k.kbd_want == 0, "covered (2) then lit room 19 lx -> off (a real session)"
 print("simulation ok")
 
-# XPS HID sensor bursts (from a real log): dark room, two sensors alternately
-# report ~40000 lx for 0.5-1.5 s, overlapping to >2 s of max(). Must be ignored.
-f = ab.SensorFilter(2, c["sensorMedianSeconds"])
+# XPS HID sensor bursts (from a real log): dark room, the sensor reports
+# ~40000 lx for 0.5-1.5 s at a time (once from two sensors, alternately). Must be ignored.
+f = ab.SensorFilter(c["sensorMedianSeconds"])
 ctl2 = ab.Controller(c); scr = 1.0; peak = 0
 def burst(t):
-    a = 41008.0 if 10.0 <= t < 11.5 else 0.0
-    b = 41008.0 if 11.0 <= t < 12.5 else 0.0
-    return [a, b]
+    return 41008.0 if 10.0 <= t < 11.5 or 12.0 <= t < 13.5 else 0.0
 for i in range(300):
     t = i * 0.1
     ctl2.feed_lux(t, f.feed(t, burst(t)))
@@ -102,21 +100,21 @@ for i in range(300):
 print(f"--- HID burst: peak screen {peak:.0f}% stable={ctl2.stable}")
 assert peak < 5 and ctl2.stable == 0.0, "sensor burst must not brighten"
 # but a real lamp switched on is followed within ~4.5 s
-f = ab.SensorFilter(2, c["sensorMedianSeconds"]); ctl3 = ab.Controller(c)
+f = ab.SensorFilter(c["sensorMedianSeconds"]); ctl3 = ab.Controller(c)
 for i in range(100):
     t = i * 0.1
-    ctl3.feed_lux(t, f.feed(t, [0.0 if t < 2 else 300.0, 0.0 if t < 2 else 250.0]))
+    ctl3.feed_lux(t, f.feed(t, 0.0 if t < 2 else 300.0))
     if ctl3.stable == 300.0: print(f"--- lamp on at 2 s followed at {t:.1f} s"); break
 assert ctl3.stable == 300.0 and t < 7
 print("sensor filter OK")
 
 # Dark-end wobble (from a real XPS log): sensor flips 0 <-> 1 lx every few s.
 assert abs(ab.curve_pct(1, c) - ab.curve_pct(0, c)) < 1, "no step between 0 and 1 lx"
-f = ab.SensorFilter(2, c["sensorMedianSeconds"]); ctl4 = ab.Controller(c); scr = 1.0; lo = hi = None
+f = ab.SensorFilter(c["sensorMedianSeconds"]); ctl4 = ab.Controller(c); scr = 1.0; lo = hi = None
 for i in range(1200):
     t = i * 0.1
     w = 1.0 if int(t / 3) % 2 else 0.0
-    ctl4.feed_lux(t, f.feed(t, [w, w]))
+    ctl4.feed_lux(t, f.feed(t, w))
     v = ctl4.step(t, scr)
     if v is not None: scr = v
     if t > 5: lo = scr if lo is None else min(lo, scr); hi = scr if hi is None else max(hi, scr)

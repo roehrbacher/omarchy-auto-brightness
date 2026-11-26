@@ -12,12 +12,12 @@ SEQ = ast.literal_eval(open(os.path.join(here, "sensor-dips.txt")).read())
 
 def sim(lux_at, secs, start_kbd=0):
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"])
+    ctl, filt = ab.Controller(c), ab.SensorFilter(c["sensorMedianSeconds"])
     ctl.kbd_want = start_kbd
     t, ons, offs = 0.0, [], []
     while t < secs:
         v = lux_at(t)
-        ctl.feed_lux(t, filt.feed(t, [v, v]))
+        ctl.feed_lux(t, filt.feed(t, v))
         w = ctl.kbd_level(2, t)
         if w is not None and w != ctl.kbd_want:
             (ons if w > (ctl.kbd_want or 0) else offs).append((t, w)); ctl.kbd_want = w

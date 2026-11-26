@@ -11,11 +11,11 @@ spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module
 
 def sim(before, secs=60):
     c = dict(ab.DEFAULTS); c.update(min=1, max=100, kbdMaxLevel=2)  # level 2 is opt-in since 2.16.0
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"], c)
+    ctl, filt = ab.Controller(c), ab.SensorFilter(c["sensorMedianSeconds"], c)
     t, cur, levels = 0.0, 50.0, []
     while t < secs:
         v = before if t < 20 else 0.0
-        ctl.feed_lux(t, filt.feed(t, [v, v]))
+        ctl.feed_lux(t, filt.feed(t, v))
         pct = ctl.step(t, cur)
         if pct is not None: cur = pct
         k = ctl.kbd_level(2, t)

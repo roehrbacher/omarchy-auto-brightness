@@ -21,13 +21,13 @@ def dev(name, maxv, cur):
     return d
 bl, kb = dev("intel_backlight", 1000, 500), dev("dell::kbd_backlight", 2, 0)
 level = lambda: int(open(kb + "/brightness").read())
-s0, s1 = tmp + "/als0", tmp + "/als1"
+s0 = tmp + "/als0"
 def room(lux):
-    for f in (s0, s1): open(f, "w").write(f"{lux}\n")
+    open(s0, "w").write(f"{lux}\n")
 writes = []
 def dev_set(self, raw):
     writes.append((self.name, int(raw), clock["t"] if "clock" in globals() else 0)); open(self.path + "/brightness", "w").write(f"{int(raw)}\n")
-ab.sensors = lambda: [(s0, 1.0), (s1, 1.0)]
+ab.sensor = lambda: (s0, 1.0)
 ab.find_dev = lambda cls, pat: bl if cls == "backlight" else kb
 ab.Dev.set = dev_set
 ab.lid_closed = lambda: False
@@ -60,7 +60,7 @@ def sleep(dt):
             if what == "manual off": writes.append(("manual", 0, clock["t"])); cli("kbd-level", "0")
             if what == "lights on": room(300)
             if what == "lights off": room(0)
-    if clock["t"] > 1130: raise KeyboardInterrupt
+    if clock["t"] > 1090 + ab.DEFAULTS["zeroDropoutSeconds"] + 20: raise KeyboardInterrupt  # 2.16.2: zeros alone wait zeroDropoutSeconds
 ab.time.sleep = sleep
 ab.time.monotonic = lambda: clock["t"]
 ab.time.time = lambda: clock["t"] + 1e9

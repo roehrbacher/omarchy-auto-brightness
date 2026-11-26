@@ -14,11 +14,11 @@ spec = importlib.util.spec_from_loader("ab", loader); ab = importlib.util.module
 
 def sim(lux_at, secs, press_after_dim=2.0, delta=20):
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"], c)
+    ctl, filt = ab.Controller(c), ab.SensorFilter(c["sensorMedianSeconds"], c)
     t, cur, staged_at, pressed, after = 0.0, None, None, None, []
     while t < secs:
         v = lux_at(t)
-        ctl.feed_lux(t, filt.feed(t, [v, v]))
+        ctl.feed_lux(t, filt.feed(t, v))
         if cur is None: cur = ctl.target()
         if staged_at is None and ctl.dim_staged: staged_at = t
         if pressed is None and staged_at is not None and t - staged_at >= press_after_dim:
@@ -29,13 +29,14 @@ def sim(lux_at, secs, press_after_dim=2.0, delta=20):
         t = round(t + (1 / 60 if ctl.ramp is not None else 0.5), 4)
     return pressed, after, ctl, c
 
-pressed, after, ctl, c = sim(lambda t: 200.0 if t < 20 else 0.0, 70)
+Z = ab.DEFAULTS["zeroDropoutSeconds"]  # 2.16.2: exact zeros alone wait this long
+pressed, after, ctl, c = sim(lambda t: 200.0 if t < 20 else 0.0, 20 + Z + 50)
 print(f"lights off, pressed up to {pressed:.0f}% during the part-way dim: lowest after {min(after):.0f}%, end {after[-1]:.0f}%, offset {ctl.offset:+.0f}")
 assert min(after) >= pressed - 1, "the screen must not dim below what you just set"
 assert ctl.offset > 0
 
 # the offset still goes when the light really comes back (2.5x rule)
-pressed, after, ctl, c = sim(lambda t: 200.0 if t < 20 or t > 50 else 0.0, 80)
-print(f"...and the lights come back on at 50 s: end {after[-1]:.0f}% (curve at 200 lx {ab.curve_pct(200, c):.0f}%), offset {ctl.offset:+.0f}")
+pressed, after, ctl, c = sim(lambda t: 200.0 if t < 20 or t > 20 + Z + 30 else 0.0, 20 + Z + 60)
+print(f"...and the lights come back on {Z + 30:.0f} s after going off: end {after[-1]:.0f}% (curve at 200 lx {ab.curve_pct(200, c):.0f}%), offset {ctl.offset:+.0f}")
 assert ctl.offset == 0 and abs(after[-1] - ab.curve_pct(200, c)) < 1
 print("ok")

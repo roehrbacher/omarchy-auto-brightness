@@ -1,7 +1,7 @@
 """The daemon loop itself (run()) against fake sysfs files in a temp dir:
 two light sensors, a backlight and a keyboard light. No D-Bus, hyprctl or
 real hardware: those helpers are stubbed. Catches crashes in the loop that the
-Controller tests cannot see (2.8.0 shipped one). Fake clock, 2 Hz idle and
+Controller tests cannot see (2.8.0 shipped one). Fake clock, 1 Hz idle and
 60 Hz fades like the real loop."""
 import atexit, importlib.machinery, importlib.util, json, os, shutil, tempfile
 tmp = tempfile.mkdtemp(prefix="ab-smoke-")
@@ -20,21 +20,22 @@ def dev(name, maxv, cur):
     open(d + "/max_brightness", "w").write(f"{maxv}\n"); open(d + "/brightness", "w").write(f"{cur}\n")
     return d
 bl, kb = dev("intel_backlight", 1000, 500), dev("dell::kbd_backlight", 2, 0)
-s0, s1 = tmp + "/als0", tmp + "/als1"
+s0 = tmp + "/als0"
 def room(lux):
-    for f in (s0, s1): open(f, "w").write(f"{lux}\n")
+    open(s0, "w").write(f"{lux}\n")
 room(300)
 
+c0 = ab.DEFAULTS
 clock = {"t": 1000.0, "sleeps": 0}
 def sleep(dt):
     clock["t"] += dt; clock["sleeps"] += 1
     if abs(clock["t"] - 1030) < 0.3: room(0)          # lights off at 30 s
-    if clock["t"] > 1070: raise KeyboardInterrupt
+    if clock["t"] > 1030 + c0["zeroDropoutSeconds"] + 40: raise KeyboardInterrupt  # 2.16.2: zeros alone wait zeroDropoutSeconds
 writes = []
 def dev_set(self, raw):
     writes.append((self.name, int(raw))); open(self.path + "/brightness", "w").write(f"{int(raw)}\n")
 
-ab.sensors = lambda: [(s0, 1.0), (s1, 1.0)]
+ab.sensor = lambda: (s0, 1.0)
 ab.find_dev = lambda cls, pat: bl if cls == "backlight" else kb
 ab.Dev.set = dev_set
 ab.lid_closed = lambda: False

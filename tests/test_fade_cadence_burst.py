@@ -15,7 +15,7 @@ def sim(lux_at, secs, sample=None):
     """sample=None: feed the sensors on every pass (the 2.10-2.15 cadence);
     sample=0.25: at most every 0.25 s like 2.16.0, while writes stay at 60 Hz."""
     c = dict(ab.DEFAULTS); c.update(min=1, max=100)
-    ctl, filt = ab.Controller(c), ab.SensorFilter(2, c["sensorMedianSeconds"], c)
+    ctl, filt = ab.Controller(c), ab.SensorFilter(c["sensorMedianSeconds"], c)
     t, cur, peak, fades, last = 0.0, None, 0.0, 0, None
     while t < secs:
         if sample is None or last is None or t - last >= sample - 1e-6:
@@ -36,7 +36,7 @@ def lamp_and_burst(t):
     room = 150.0 if t < 20 else 300.0
     a = room
     if 24.5 <= t < 26.5: a = 41008.0
-    return [a, room * 0.9]
+    return a
 peak, end, c = sim(lamp_and_burst, 60)
 want = ab.curve_pct(300, c)
 print(f"burst during a fade at 300 lx: peak {peak:.0f}% (room level {want:.0f}%), end {end:.0f}%")
@@ -47,15 +47,15 @@ assert abs(end - want) < 1, end
 # 3000 lx that starts during a fade is followed
 def real(t):
     v = 150.0 if t < 20 else (300.0 if t < 23 else 3000.0)
-    return [v, v * 0.9]
+    return v
 peak, end, c = sim(real, 60)
 print(f"real 300 -> 3000 lx during a fade: end {end:.0f}% (want {ab.curve_pct(3000, c):.0f}%)")
 assert abs(end - ab.curve_pct(3000, c)) < 1
 
-# 2.16.0: the daemon reads the sensors at most 4 times a second, also while
-# fading. The same burst and the same real change come out the same.
+# 2.16.5: once a second, also while fading. The same burst and the same
+# real change come out the same (the median is weighted by time).
 for name, fn, want in (("burst", lamp_and_burst, ab.curve_pct(300, c)), ("real", real, ab.curve_pct(3000, c))):
-    peak, end, _ = sim(fn, 60, sample=0.25)
-    print(f"4 Hz sensor reads, {name}: peak {peak:.0f}%, end {end:.0f}% (want {want:.0f}%)")
+    peak, end, _ = sim(fn, 60, sample=1.0)
+    print(f"1 Hz sensor reads, {name}: peak {peak:.0f}%, end {end:.0f}% (want {want:.0f}%)")
     assert abs(end - want) < 1 and (name == "real" or peak < want + 1)
 print("ok")

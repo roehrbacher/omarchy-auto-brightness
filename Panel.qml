@@ -18,7 +18,8 @@ Panel {
   readonly property string runDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
   // The daemon rewrites the state file on every pass. While the popup is
   // open it is re-read on each change (inotify), and the popup touches the
-  // watch file every second so the daemon reads the sensors 4 times a second instead of 2.
+  // watch file every second so the daemon knows it is open. The sensor is
+  // read once a second either way (2.16.5).
   readonly property string stateFile: runDir + "/omarchy-auto-brightness.json"
   readonly property string watchFile: runDir + "/omarchy-auto-brightness.watch"
   property var st: ({ enabled: false, min: 8, max: 100, keyboard: true, mode: "not running" })

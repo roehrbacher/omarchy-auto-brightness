@@ -29,13 +29,13 @@ supply("00-mouse", type="Battery", scope="Device", capacity=5, status="Dischargi
 supply("AC", type="Mains", online=0)
 supply("BAT0", type="Battery", capacity=50, status="Discharging")
 ab.POWER_SUPPLY = ps
-s0, s1 = tmp + "/als0", tmp + "/als1"
-for f in (s0, s1): open(f, "w").write("0\n")  # dark room the whole time
+s0 = tmp + "/als0"
+open(s0, "w").write("0\n")  # dark room the whole time
 writes = []
 def dev_set(self, raw):
     if self.name != "intel_backlight": writes.append((int(raw), round(clock["t"] - 1000, 1)))
     open(self.path + "/brightness", "w").write(f"{int(raw)}\n")
-ab.sensors = lambda: [(s0, 1.0), (s1, 1.0)]
+ab.sensor = lambda: (s0, 1.0)
 ab.find_dev = lambda cls, pat: bl if cls == "backlight" else kb
 ab.Dev.set = dev_set
 ab.lid_closed = lambda: False
